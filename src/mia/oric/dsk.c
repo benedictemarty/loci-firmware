@@ -299,9 +299,10 @@ bool dsk_flush_track(void){
             f_sync(dsk_active.drive->fat_file);
             break;
         case WEB:
-            //Écriture non supportée au départ (le modem n'a pas de PUT binaire-safe ;
-            //une commande ATDISKWR viendra plus tard). Disque WEB monté en lecture seule.
-            printf("##WEB read-only, écriture ignorée##\n");
+            //Écriture de la piste (6400 o) vers le serveur via le modem (ATDISKWR).
+            if(!dsk_web_write(dsk_active.drive->web_url, track_off, 6400, (const void *)dsk_buf))
+                printf("##WEB write fail [%c:%ld:%02ld]##\n",
+                       'A' + dsk_active.drive_num, dsk_active.side, dsk_active.track);
             break;
     }
     dsk_active.track_writeback = false;

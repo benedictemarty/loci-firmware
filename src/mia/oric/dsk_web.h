@@ -41,4 +41,12 @@ bool dsk_web_available(void);
  */
 bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf);
 
+/*
+ * Écrit `len` octets de `buf` à l'offset `offset` de l'image `url`. Émet
+ * ATDISKWR<url>?offset=&len= puis les octets bruts ; le modem fait un PUT au serveur.
+ * Renvoie true si le modem répond OK (HTTP 2xx). Le disque doit être servi en écriture
+ * (serveur --writable).
+ */
+bool dsk_web_write(const char *url, uint32_t offset, uint32_t len, const void *buf);
+
 #endif /* _DSK_WEB_H_ */
