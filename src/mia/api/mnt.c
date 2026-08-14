@@ -43,7 +43,14 @@ uint8_t mnt_mount(uint8_t drive, char *path){
     }else{
         dsk_umount(drive);
     }
-    if(path[0]=='0'){   //LFS mount for path starting"0:"
+    if(strncmp(path,"http://",7)==0 || strncmp(path,"https://",8)==0){
+        //Web-backed disk (loci-webdisk archi B) : image distante servie via le modem.
+        //Réservé aux lecteurs 0..3 (pas ROM/tape).
+        if(drive >= 4)
+            return API_EINVAL;
+        if(!dsk_mount_web(drive, path))
+            return API_EIO;     //pas de modem prêt / en-tête invalide / timeout
+    }else if(path[0]=='0'){   //LFS mount for path starting"0:"
         //Todo attribute check RO
         lfs_file_opencfg(&lfs_volume, &mnt_fd_lfs[drive], &path[2], LFS_O_RDWR, lfs_alloc_file_config());
         if(drive == 5){
