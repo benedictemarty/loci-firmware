@@ -23,6 +23,7 @@
 
 bool dsk_mount_lfs(uint8_t drive, lfs_file_t *lfs_file);
 bool dsk_mount_fat(uint8_t drive, FIL *fat_file);
+bool dsk_mount_web(uint8_t drive, const char *url);
 void dsk_umount(uint8_t drive);
 /* Kernel events
  */

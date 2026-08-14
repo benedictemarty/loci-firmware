@@ -152,6 +152,7 @@ target_sources(loci-firmware PRIVATE
     mia/oric/acia.c
     mia/oric/map.c
     mia/oric/dsk.c
+    mia/oric/dsk_web.c
     mia/oric/rom.c
     mia/oric/tap.c
     mia/oric/ula.c
@@ -174,7 +175,7 @@ set_property(TARGET loci-firmware
     LOCIFW_MAX_PHI2=8000
     LOCIFW_EXFAT=1
     LOCIFW_BOARD="Rev 1.x"
-    EMBEDDED_TEST108K_ROM=1
+    # EMBEDDED_TEST108K_ROM=1  # diagrom propriétaire absente de src/roms (build webdisk) — désactivée
     EMBEDDED_EXTRA_ROMS=1
 )
 if(DEFINED LOCIFW_VERSION)

@@ -13,6 +13,7 @@
 */
 
 #include "oric/dsk.h"
+#include "oric/dsk_web.h"
 #include "main.h"
 #include "sys/ext.h"
 #include "sys/led.h"
@@ -28,7 +29,7 @@ volatile uint8_t dsk_buf[6400];
 //Oric MFM_DISK signature
 uint8_t dsk_signature[8] = "MFM_DISK";
 
-enum DSK_TYPE { EMPTY = 0, LFS, FAT };
+enum DSK_TYPE { EMPTY = 0, LFS, FAT, WEB };
 typedef struct _dsk_drive_t {
     enum DSK_TYPE type;
     lfs_file_t *lfs_file;
@@ -36,6 +37,7 @@ typedef struct _dsk_drive_t {
     uint32_t sides;
     uint32_t tracks;
     uint32_t geometry;
+    char web_url[96];   //Type WEB : URL de base de l'image distante (backend loci-webdisk)
 } dsk_drive_t;
 
 dsk_drive_t dsk_drives[4] = {{0}};
@@ -180,6 +182,34 @@ bool dsk_mount_fat(uint8_t drive, FIL *fat_file){
 }
 
 
+//Monte une image distante (web-backed) servie par le modem via ATDISKRD.
+//`url` = URL de base de l'image, ex. "http://192.168.88.252:8080/disk/game.dsk".
+//Lit les 20 octets d'en-tête MFM_DISK (signature + géométrie) comme dsk_mount_fat.
+bool dsk_mount_web(uint8_t drive, const char *url){
+    uint8_t header_buf[20];
+    if(drive > 3)
+        return false;
+    if(!dsk_web_available())     //Pas de modem monté / prêt
+        return false;
+    strncpy(dsk_drives[drive].web_url, url, sizeof(dsk_drives[drive].web_url) - 1);
+    dsk_drives[drive].web_url[sizeof(dsk_drives[drive].web_url) - 1] = '\0';
+    if(!dsk_web_read(dsk_drives[drive].web_url, 0, 20, header_buf))
+        return false;
+    for(uint8_t i=0; i<8; i++){
+        if(header_buf[i] != dsk_signature[i]){
+            return false;
+        }
+    }
+    dsk_drives[drive].type = WEB;
+    dsk_drives[drive].sides = *(uint32_t *)(header_buf+8);
+    dsk_drives[drive].tracks = *(uint32_t *)(header_buf+12);
+    dsk_drives[drive].geometry = *(uint32_t *)(header_buf+16);
+    printf("dsk web tr:%ld/%ld",dsk_drives[drive].tracks,dsk_drives[drive].geometry);
+    dsk_active.buf_update_needed = true;
+    return true;
+}
+
+
 void dsk_umount(uint8_t drive){
     if(drive > 3) {
         return;
@@ -193,6 +223,7 @@ void dsk_umount(uint8_t drive){
         lfs_free_file_config(dsk_drives[drive].lfs_file);
         lfs_file_close(&lfs_volume, dsk_drives[drive].lfs_file);
     }
+    //WEB : rien à fermer (montage logique, pas de handle local)
     dsk_drives[drive].type = EMPTY;
 }
 
@@ -230,6 +261,11 @@ bool dsk_set_active_track(uint32_t track){
             f_lseek(dsk_active.drive->fat_file, (FSIZE_t)track_off);
             fr = f_read(dsk_active.drive->fat_file, (void *)dsk_buf, 6400, &br);
             break;
+        case WEB:
+            //Lecture de la piste (6400 o) depuis le serveur via le modem (ATDISKRD).
+            if(!dsk_web_read(dsk_active.drive->web_url, track_off, 6400, (void *)dsk_buf))
+                return false;   //timeout/erreur réseau → laisse la piste inchangée
+            break;
     }
     dsk_active.track = track;
     dsk_active.track_writeback = false;
@@ -261,6 +297,11 @@ bool dsk_flush_track(void){
             f_lseek(dsk_active.drive->fat_file, (FSIZE_t)track_off);
             fr = f_write(dsk_active.drive->fat_file, (void *)dsk_buf, 6400, &br);
             f_sync(dsk_active.drive->fat_file);
+            break;
+        case WEB:
+            //Écriture non supportée au départ (le modem n'a pas de PUT binaire-safe ;
+            //une commande ATDISKWR viendra plus tard). Disque WEB monté en lecture seule.
+            printf("##WEB read-only, écriture ignorée##\n");
             break;
     }
     dsk_active.track_writeback = false;
