@@ -81,6 +81,40 @@ static int web_getc(uint8_t dev, uint64_t deadline)
     return -1;
 }
 
+/* Attend "+DISK:<len>\r\n" (robuste à l'écho) et renvoie <len> dans *rlen.
+ * Partagé par dsk_web_read (taille exacte) et dsk_web_fetch (taille variable). */
+static bool web_recv_header(uint8_t dev, uint64_t deadline, uint32_t *rlen)
+{
+    static const char marker[] = "+DISK:";
+    int mi = 0, c;
+    while (mi < (int)(sizeof marker - 1)) {
+        c = web_getc(dev, deadline);
+        if (c < 0)
+            return false;
+        mi = (c == marker[mi]) ? mi + 1 : (c == marker[0]);
+    }
+    uint32_t v = 0;
+    bool any = false;
+    for (;;) {
+        c = web_getc(dev, deadline);
+        if (c < 0)
+            return false;
+        if (c >= '0' && c <= '9') {
+            v = v * 10 + (uint32_t)(c - '0');
+            any = true;
+        } else if (c == '\r') {
+            break;
+        } else if (any) {
+            return false;
+        }
+    }
+    web_getc(dev, deadline); /* consommer le LF */
+    if (!any)
+        return false;
+    *rlen = v;
+    return true;
+}
+
 bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf)
 {
     int dev = dsk_web_modem_dev();
@@ -99,38 +133,9 @@ bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf)
     if (!web_write_all((uint8_t)dev, cmd, (uint32_t)n, deadline))
         return false;
 
-    /* Attendre le marqueur "+DISK:" (robuste à l'écho de la commande). */
-    static const char marker[] = "+DISK:";
-    int mi = 0, c;
-    while (mi < (int)(sizeof marker - 1)) {
-        c = web_getc((uint8_t)dev, deadline);
-        if (c < 0)
-            return false;
-        if (c == marker[mi])
-            mi++;
-        else
-            mi = (c == marker[0]) ? 1 : 0;
-    }
-
-    /* Lire la longueur annoncée jusqu'au CR. */
     uint32_t rlen = 0;
-    bool any = false;
-    while (1) {
-        c = web_getc((uint8_t)dev, deadline);
-        if (c < 0)
-            return false;
-        if (c >= '0' && c <= '9') {
-            rlen = rlen * 10 + (uint32_t)(c - '0');
-            any = true;
-        } else if (c == '\r') {
-            break;
-        } else if (any) {
-            return false; /* format inattendu */
-        }
-    }
-    web_getc((uint8_t)dev, deadline); /* consommer le LF */
-    if (!any || rlen != len)
-        return false; /* le serveur a renvoyé une autre taille → échec propre */
+    if (!web_recv_header((uint8_t)dev, deadline, &rlen) || rlen != len)
+        return false; /* autre taille annoncée → échec propre */
 
     /* Lire exactement len octets de corps dans buf. */
     uint8_t *out = (uint8_t *)buf;
@@ -214,47 +219,18 @@ bool dsk_web_fetch(const char *url, void *buf, uint32_t cap, uint32_t *outlen)
     if (!web_write_all((uint8_t)dev, cmd, (uint32_t)n, deadline))
         return false;
 
-    /* Attendre le marqueur "+DISK:" (robuste à l'écho de la commande). */
-    static const char marker[] = "+DISK:";
-    int mi = 0, c;
-    while (mi < (int)(sizeof marker - 1)) {
-        c = web_getc((uint8_t)dev, deadline);
-        if (c < 0)
-            return false;
-        if (c == marker[mi])
-            mi++;
-        else
-            mi = (c == marker[0]) ? 1 : 0;
-    }
-
-    /* Longueur annoncée jusqu'au CR (taille variable, contrairement à dsk_web_read). */
     uint32_t rlen = 0;
-    bool any = false;
-    while (1) {
-        c = web_getc((uint8_t)dev, deadline);
-        if (c < 0)
-            return false;
-        if (c >= '0' && c <= '9') {
-            rlen = rlen * 10 + (uint32_t)(c - '0');
-            any = true;
-        } else if (c == '\r') {
-            break;
-        } else if (any) {
-            return false;
-        }
-    }
-    web_getc((uint8_t)dev, deadline); /* consommer le LF */
-    if (!any)
+    if (!web_recv_header((uint8_t)dev, deadline, &rlen))
         return false;
 
-    /* Lire les rlen octets ; n'en conserver que cap, jeter le reste (garde le
-     * flux modem synchronisé pour l'appel suivant). */
+    /* Lire les rlen octets (taille variable) ; n'en conserver que cap, jeter le
+     * reste (garde le flux modem synchronisé pour l'appel suivant). */
     uint8_t *out = (uint8_t *)buf;
     uint32_t got = 0;
     while (got < rlen) {
         if (time_us_64() > deadline)
             return false;
-        c = web_getc((uint8_t)dev, deadline);
+        int c = web_getc((uint8_t)dev, deadline);
         if (c < 0)
             return false;
         if (got < cap)
