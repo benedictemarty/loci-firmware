@@ -49,4 +49,19 @@ bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf);
  */
 bool dsk_web_write(const char *url, uint32_t offset, uint32_t len, const void *buf);
 
+/*
+ * URL racine du serveur de disques web (ex. "http://192.168.88.252:8080"), pour
+ * le pseudo-périphérique « W: Web disks » du menu (Route B). Chaîne vide = device
+ * web désactivé. Fournie à la compilation via -DLOCI_WEBDISK_BASE="...".
+ */
+const char *dsk_web_base(void);
+
+/*
+ * GET généraliste via le modem (variante de dsk_web_read SANS contrainte de taille) :
+ * émet ATDISKRD<url>, lit la trame +DISK:<len> et copie jusqu'à `cap` octets dans
+ * `buf`, en renvoyant la longueur réellement annoncée dans *outlen. Sert à récupérer
+ * la liste JSON GET {base}/disks (taille variable). Renvoie true si un corps a été lu.
+ */
+bool dsk_web_fetch(const char *url, void *buf, uint32_t cap, uint32_t *outlen);
+
 #endif /* _DSK_WEB_H_ */

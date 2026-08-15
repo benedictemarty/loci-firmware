@@ -186,3 +186,81 @@ bool dsk_web_write(const char *url, uint32_t offset, uint32_t len, const void *b
     }
     return false;
 }
+
+/* ─── Route B : base URL + GET généraliste (liste /disks) ─────────────────── */
+
+const char *dsk_web_base(void)
+{
+#ifdef LOCI_WEBDISK_BASE
+    return LOCI_WEBDISK_BASE;
+#else
+    return "";
+#endif
+}
+
+bool dsk_web_fetch(const char *url, void *buf, uint32_t cap, uint32_t *outlen)
+{
+    int dev = dsk_web_modem_dev();
+    if (dev < 0 || url == NULL || buf == NULL || cap == 0 || outlen == NULL)
+        return false;
+
+    char cmd[192];
+    int n = snprintf(cmd, sizeof cmd, "ATDISKRD%s\r", url);
+    if (n <= 0 || n >= (int)sizeof cmd)
+        return false;
+
+    uint64_t deadline = time_us_64() + DSK_WEB_TIMEOUT_US;
+    web_drain((uint8_t)dev);
+    if (!web_write_all((uint8_t)dev, cmd, (uint32_t)n, deadline))
+        return false;
+
+    /* Attendre le marqueur "+DISK:" (robuste à l'écho de la commande). */
+    static const char marker[] = "+DISK:";
+    int mi = 0, c;
+    while (mi < (int)(sizeof marker - 1)) {
+        c = web_getc((uint8_t)dev, deadline);
+        if (c < 0)
+            return false;
+        if (c == marker[mi])
+            mi++;
+        else
+            mi = (c == marker[0]) ? 1 : 0;
+    }
+
+    /* Longueur annoncée jusqu'au CR (taille variable, contrairement à dsk_web_read). */
+    uint32_t rlen = 0;
+    bool any = false;
+    while (1) {
+        c = web_getc((uint8_t)dev, deadline);
+        if (c < 0)
+            return false;
+        if (c >= '0' && c <= '9') {
+            rlen = rlen * 10 + (uint32_t)(c - '0');
+            any = true;
+        } else if (c == '\r') {
+            break;
+        } else if (any) {
+            return false;
+        }
+    }
+    web_getc((uint8_t)dev, deadline); /* consommer le LF */
+    if (!any)
+        return false;
+
+    /* Lire les rlen octets ; n'en conserver que cap, jeter le reste (garde le
+     * flux modem synchronisé pour l'appel suivant). */
+    uint8_t *out = (uint8_t *)buf;
+    uint32_t got = 0;
+    while (got < rlen) {
+        if (time_us_64() > deadline)
+            return false;
+        c = web_getc((uint8_t)dev, deadline);
+        if (c < 0)
+            return false;
+        if (got < cap)
+            out[got] = (uint8_t)c;
+        got++;
+    }
+    *outlen = (rlen < cap) ? rlen : cap;
+    return true;
+}

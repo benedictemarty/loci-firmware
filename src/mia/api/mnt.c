@@ -7,6 +7,7 @@
 #include "api/api.h"
 #include "api/mnt.h"
 #include "oric/dsk.h"
+#include "oric/dsk_web.h"
 #include "oric/rom.h"
 #include "oric/tap.h"
 #include "fatfs/ff.h"
@@ -43,7 +44,19 @@ uint8_t mnt_mount(uint8_t drive, char *path){
     }else{
         dsk_umount(drive);
     }
-    if(strncmp(path,"http://",7)==0 || strncmp(path,"https://",8)==0){
+    if((path[0]=='W'||path[0]=='w') && path[1]==':' && dsk_web_base()[0]){
+        //Pseudo-périphérique « W: Web disks » (loci-webdisk, Route B) : le menu
+        //sélectionne un disque -> mount(drive,"W:","<nom>") -> path="W:/<nom>".
+        //On mappe vers {base}/disk/<nom> et on monte comme un disque web.
+        if(drive >= 4)
+            return API_EINVAL;
+        const char *nm = path + 2;
+        while(*nm == '/') nm++;              //mount() insère un '/'
+        char url[160];
+        snprintf(url, sizeof url, "%s/disk/%s", dsk_web_base(), nm);
+        if(!dsk_mount_web(drive, url))
+            return API_EIO;
+    }else if(strncmp(path,"http://",7)==0 || strncmp(path,"https://",8)==0){
         //Web-backed disk (loci-webdisk archi B) : image distante servie via le modem.
         //Réservé aux lecteurs 0..3 (pas ROM/tape).
         if(drive >= 4)

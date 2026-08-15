@@ -9,7 +9,10 @@
 #include "sys/lfs.h"
 #include "fatfs/ff.h"
 #include "usb/usb.h"
+#include "oric/dsk.h"       /* dsk_buf[] réutilisé comme scratch JSON (RAM-neutre) */
+#include "oric/dsk_web.h"   /* Route B : pseudo-device « W: Web disks » */
 #include "tusb.h"
+#include <stdio.h>
 #include <string.h>
 
 /* Kernel events
@@ -43,7 +46,14 @@ errno Errors: EBADF means dirp does not refer to an open directory stream.
 #define FD_OFFS_DEV 0
 #define FD_OFFS_LFS 32
 #define FD_OFFS_FAT 64
+#define FD_OFFS_WEB 96   /* Route B : itérateur unique du device « W: Web disks » */
 int dir_dev = -1;
+
+/* Route B : le JSON GET {base}/disks est récupéré une fois par opendir("W:") dans
+ * le buffer piste dsk_buf[6400] (inutilisé pendant la navigation → RAM-neutre) et
+ * re-scanné à chaque readdir via un curseur, évitant un tableau de noms séparé. */
+static uint32_t web_json_pos;
+static bool     web_dev_listed;   /* device « W: » déjà émis dans la device-list */
 lfs_dir_t dir_lfs[DIR_LFS_MAX] = {0};
 bool dir_lfs_open[DIR_LFS_MAX] = {0};
 DIR dir_fat[DIR_FAT_MAX] = {0};
@@ -63,12 +73,27 @@ void dir_api_opendir(void){
     api_zxstack();
     int fd;
     switch(path[0]){
-    case 0x00:  //Internal and USB device list. Only one iterator 
+    case 0x00:  //Internal and USB device list. Only one iterator
         if(dir_dev >= 0)
             api_return_errno(API_EMFILE);
         dir_dev = 0;
+        web_dev_listed = false;
         return api_return_ax(0 + FD_OFFS_DEV);
         break;
+    case 'W':   //Route B : pseudo-device web « W: Web disks »
+    case 'w':
+        if(!dsk_web_base()[0])
+            return api_return_errno(API_ENODEV);
+        {
+            char url[160];
+            uint32_t got = 0;
+            snprintf(url, sizeof url, "%s/disks", dsk_web_base());
+            if(!dsk_web_fetch(url, (void*)dsk_buf, 6400 - 1, &got))
+                return api_return_errno(API_EIO);
+            dsk_buf[got] = '\0';
+            web_json_pos = 0;
+        }
+        return api_return_ax(FD_OFFS_WEB);
     case '0':   //LFS internal storage
         fd = 0;
         for (; fd < DIR_LFS_MAX; fd++)
@@ -109,6 +134,9 @@ void dir_api_closedir(void){
     api_zxstack();
     if (fd < 0)
         return api_return_errno(API_EINVAL);
+    if(fd == FD_OFFS_WEB){   //Route B : device web
+        return api_return_ax(0);
+    }
     if(fd >= FD_OFFS_FAT){
         DIR *dp = &dir_fat[fd - FD_OFFS_FAT];
         FRESULT fresult = f_closedir(dp);
@@ -131,6 +159,32 @@ void dir_api_readdir(void){
     struct dir_dirent dirent;
     if (fd < 0)
         return api_return_errno(API_EINVAL);
+    if(fd == FD_OFFS_WEB){   //Route B : liste des .dsk servis (JSON GET /disks)
+        dirent.d_fd = FD_OFFS_WEB;
+        dirent.d_attrib = 0x00;          //fichier ordinaire
+        dirent.d_name[0] = '\0';
+        dirent.d_size = 0;
+        //Scanner le prochain "name":"..." dans dsk_buf depuis le curseur.
+        char *wj = (char*)dsk_buf;
+        char *p = strstr(&wj[web_json_pos], "\"name\"");
+        if(p){
+            p = strchr(p + 6, ':');
+            if(p) p = strchr(p, '"');
+            char *q = p ? strchr(p + 1, '"') : NULL;
+            if(p && q){
+                size_t len = (size_t)(q - (p + 1));
+                if(len >= DIR_FN_LEN) len = DIR_FN_LEN - 1;
+                memcpy(dirent.d_name, p + 1, len);
+                dirent.d_name[len] = '\0';
+                web_json_pos = (uint32_t)(q + 1 - wj);
+            }
+        }
+        api_set_ax(0);
+        xstack_ptr = XSTACK_SIZE - sizeof(dirent);
+        memcpy((void*)&xstack[xstack_ptr], &dirent, sizeof(dirent));
+        api_sync_xstack();
+        return api_return_released();
+    }
     if(fd >= FD_OFFS_FAT){
         DIR *dp = &dir_fat[fd - FD_OFFS_FAT];
         FILINFO fno;
@@ -176,7 +230,14 @@ void dir_api_readdir(void){
             while(!tuh_mounted(dir_dev) && dir_dev < CFG_TUH_DEVICE_MAX)
                 dir_dev++;
             if(dir_dev >= CFG_TUH_DEVICE_MAX){
-                dirent.d_name[0] = '\0';
+                //Route B : après les clés USB, une entrée « W: Web disks » si un
+                //serveur web est configuré (une seule fois), puis fin de liste.
+                if(dsk_web_base()[0] && !web_dev_listed){
+                    strcpy((char*)dirent.d_name, "W: Web disks");
+                    web_dev_listed = true;
+                }else{
+                    dirent.d_name[0] = '\0';
+                }
             }else{
                 dev_message = usb_get_status(dir_dev);
                 strncpy((char*)dirent.d_name, dev_message, 64);
