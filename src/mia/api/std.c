@@ -15,11 +15,11 @@
 #include "hardware/flash.h"
 #include <stdio.h>
 
-/* loci-webdisk : 16 -> 10 pour faire tenir archi-B + Route-B dans les 192 Ko de
- * RAM en build -Os (economise 6*sizeof(FIL) ~= 3.6 Ko ; marge pour la .heap fixe de 2 Ko du crt0).
- * Arbitrage assume : 10 fichiers FAT ouverts simultanement au lieu de 16 — sans
- * impact pour LOCI. A revoir si le mainteneur reduit l'empreinte copy-to-RAM. */
-#define STD_FIL_MAX 10
+/* loci-webdisk : restauré à 16 (valeur upstream) après portage de la Stratégie C.
+ * Le workaround précédent (16->10) contournait le débordement RAM du binaire
+ * copy_to_ram ; la Stratégie C (binaire FLASH/XIP) libère ~148 Ko et rend la
+ * réduction inutile — on retrouve les 16 fichiers FAT ouverts simultanément. */
+#define STD_FIL_MAX 16
 FIL std_fil[STD_FIL_MAX];
 #define STD_LFS_MAX 2
 bool lfs_isopen[STD_LFS_MAX] = {false};

@@ -149,8 +149,11 @@ static inline bool api_is_xstack_empty(void)
 // 03B7 60      RTS
 // 03B8 FF FF   .SREG $FF $FF
 
-static inline void api_return_blocked() { *(uint32_t *)&regs[0x10] = 0xA9FE50B8; }
-static inline void api_return_released() { *(uint32_t *)&regs[0x10] = 0xA90050B8; }
+// always_inline : appelées depuis act_loop (.time_critical / RAM). Garantit
+// l'inlining pour qu'aucune copie hors-ligne en flash ne soit appelée depuis le
+// chemin bus (Stratégie C, portée depuis loci-fw refactor/strategie-c).
+static inline __attribute__((always_inline)) void api_return_blocked() { *(uint32_t *)&regs[0x10] = 0xA9FE50B8; }
+static inline __attribute__((always_inline)) void api_return_released() { *(uint32_t *)&regs[0x10] = 0xA90050B8; }
 
 // Fast boot by jumping to reset vector
 // 03B0   B8                   CLV
@@ -180,7 +183,7 @@ static inline void api_return_resume() {
     *(uint32_t *)&regs[0x10] = 0x6C0050B8; 
 }
 
-static inline void api_set_ax(uint16_t val)
+static inline __attribute__((always_inline)) void api_set_ax(uint16_t val)
 {
     *(uint32_t *)&regs[0x14] = 0x6000A200 | (val & 0xFF) | ((val << 8) & 0xFF0000);
 }
@@ -195,7 +198,7 @@ static inline void api_set_axsreg(uint32_t val)
 // Call one of these at the very end. These signal
 // the 6502 that the operation is complete.
 
-static inline void api_return_ax(uint16_t val)
+static inline __attribute__((always_inline)) void api_return_ax(uint16_t val)
 {
     api_set_ax(val);
     api_return_released();

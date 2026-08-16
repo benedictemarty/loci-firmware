@@ -67,8 +67,12 @@ create_resources(${CMAKE_CURRENT_LIST_DIR}/roms ${CMAKE_BINARY_DIR}/loci_roms.h)
 add_executable(loci-firmware)
 pico_add_extra_outputs(loci-firmware)
 pico_set_program_name(loci-firmware "LOCI firmware")
-pico_set_binary_type(loci-firmware copy_to_ram)
-pico_set_linker_script(loci-firmware ${CMAKE_CURRENT_LIST_DIR}/memmap_xram_mia.ld)
+# Stratégie C (portée depuis loci-fw refactor/strategie-c) : binaire FLASH/XIP au
+# lieu de copy_to_ram. Le code non-critique reste en flash ; seules les fonctions
+# __not_in_flash() (.time_critical) et .scratch_x/y sont en RAM -> libère ~148 Ko de
+# RAM, ce qui rend inutile le workaround STD_FIL_MAX 16->10 et autorise un build -O2.
+pico_set_binary_type(loci-firmware default)
+pico_set_linker_script(loci-firmware ${CMAKE_CURRENT_LIST_DIR}/memmap_xram_mia_flash.ld)
 
 target_include_directories(loci-firmware PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}

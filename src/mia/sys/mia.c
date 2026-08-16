@@ -706,7 +706,13 @@ int mia_read_dma_channel;
 #define MIA_RW1 IOREGS(0x03A8)
 #define MIA_STEP1 *(int8_t *)&IOREGS(0x03A9)
 #define MIA_ADDR1 IOREGSW(0x03AA)
-static __attribute__((optimize("O1"))) void act_loop(void)
+// -fno-jump-tables / -fno-tree-switch-conversion : sinon le gros switch génère
+// une jump table en .rodata (FLASH). Le code est en RAM (.time_critical) mais la
+// table le serait en flash -> lecture flash à chaque transaction bus (latence XIP
+// + crash si une écriture flash lfs coupe le XIP). Interdit toute donnée flash
+// sur le chemin bus. Stratégie C (portée depuis loci-fw refactor/strategie-c).
+static __attribute__((optimize("O1", "no-jump-tables", "no-tree-switch-conversion")))
+void __not_in_flash() act_loop(void)
 {
     // In here we bypass the usual SDK calls as needed for performance.
     while (true)

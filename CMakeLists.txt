@@ -32,6 +32,10 @@ project(LOCIFW VERSION ${LOCIFW_VERSION} LANGUAGES C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+# gcc 14 transforme implicit-function-declaration/int en erreurs ; le pico-sdk
+# épinglé est antérieur -> on les rétrograde pour compiler (idem loci-fw).
+add_compile_options(-Wno-implicit-function-declaration -Wno-implicit-int -Wno-error)
+
 pico_sdk_init()
 
 add_subdirectory(src)
