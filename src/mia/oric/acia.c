@@ -79,6 +79,48 @@ static uint8_t acia_rx_buffer[ACIA_RX_BUFFER_SIZE];
 volatile uint8_t acia_rx_buffer_head;
 volatile uint8_t acia_rx_buffer_tail;
 
+/* --- Trace 6551 -----------------------------------------------------------
+ * Les accès registres du 6502 sont servis sur core1 (act_loop, temps réel,
+ * __not_in_flash) : impossible d'y appeler printf. On enregistre donc un
+ * évènement {tag,val} dans un ring buffer lock-free (single producer core1 /
+ * single consumer core0), vidé par acia_trace_flush() depuis acia_task()
+ * (core0) vers la console UART0 (GP0/GP1, 115200).
+ * Tags : 'W' data write, 'R' data read, 'C' cmd, 'T' ctrl, 'S' status reset,
+ *        'K' clr irq, 'I' irq fired (val = stat).
+ * Mettre ACIA_TRACE à 0 pour compiler la trace hors du firmware de prod.
+ */
+#define ACIA_TRACE 1
+#if ACIA_TRACE
+#define ACIA_TRC_SIZE 256           /* puissance de 2 */
+#define ACIA_TRC_IDX_MASK (ACIA_TRC_SIZE - 1)
+typedef struct { uint8_t tag, val; } acia_trc_t;
+static volatile acia_trc_t acia_trc[ACIA_TRC_SIZE];
+static volatile uint8_t acia_trc_head;
+static volatile uint8_t acia_trc_tail;
+
+__attribute__((always_inline)) static inline void acia_trace(uint8_t tag, uint8_t val)
+{
+    uint8_t h = acia_trc_head;
+    acia_trc[h].tag = tag;
+    acia_trc[h].val = val;
+    __dmb();
+    acia_trc_head = (h + 1) & ACIA_TRC_IDX_MASK;
+}
+
+static void acia_trace_flush(void)
+{
+    while (acia_trc_tail != acia_trc_head)
+    {
+        acia_trc_t e = acia_trc[acia_trc_tail];
+        printf("6551 %c %02x\n", e.tag, e.val);
+        acia_trc_tail = (acia_trc_tail + 1) & ACIA_TRC_IDX_MASK;
+    }
+}
+#else
+#define acia_trace(tag, val) ((void)0)
+#define acia_trace_flush()   ((void)0)
+#endif
+
 void acia_set_base_status(uint8_t bit_mask, bool set){
     if(set){
         acia_stat_base |= bit_mask;
@@ -105,13 +147,14 @@ void acia_init(void){
 void acia_task(void){
     static uint8_t cnt = 0;
     bool fire_irq = false;
+    acia_trace_flush();
     if(acia_dev < 0){
         for(uint8_t i=0; i < CFG_TUH_CDC; i++){
         //Only hooking up to CDC devices with AT commands aka modems
         //TODO make configurable what CDC device to "mount"
             if(tuh_cdc_mounted(i) && cdc_is_modem(i)){
                 acia_dev = i;
-                //printf("ACIA on %d\n", acia_dev);
+                printf("ACIA on %d\n", acia_dev);
                 acia_set_base_status(ACIA_STAT_NOT_DSR,false);
                 acia_set_base_status(ACIA_STAT_NOT_DCD,false);
                 if(acia_line_state_dtr != 0){
@@ -194,6 +237,7 @@ void acia_task(void){
 
     __dmb();
     if(fire_irq){
+        acia_trace('I', acia_stat_base | acia_stat_tx | acia_stat_rx | ACIA_STAT_IRQ);
         acia_stat_irq = ACIA_STAT_IRQ;
         ext_put(EXT_IRQ,true);
         acia_io->stat = acia_stat_base | acia_stat_tx | acia_stat_rx | ACIA_STAT_IRQ;   //Race free irq assign
@@ -335,6 +379,7 @@ void acia_do_ctrl(uint8_t ctrl){
 /* Action loop interface functions. Time critical. Runs on other core */
 
 void __not_in_flash() acia_reset(bool hw_reset){
+    acia_trace('S', hw_reset);
     if(hw_reset){
         // IOREGS(ACIA_IO_DATA) = 0;
         // IOREGS(ACIA_IO_STAT) = ACIA_STAT_TX_EMPTY | ACIA_STAT_NOT_DSR | ACIA_STAT_NOT_DCD;
@@ -355,6 +400,7 @@ void __not_in_flash() acia_reset(bool hw_reset){
 
 void __not_in_flash() acia_read(void){
     //acia_io->stat &= ~ACIA_STAT_RX_FULL;
+    acia_trace('R', acia_io->data);
     __dmb();
     acia_stat_rx = 0x00;
     ACIA_UPDATE_STAT;
@@ -362,12 +408,14 @@ void __not_in_flash() acia_read(void){
 
 void __not_in_flash() acia_clr_irq(void){
     //acia_io->stat &= ~ACIA_STAT_IRQ;
+    acia_trace('K', acia_io->stat);
     __dmb();
     acia_stat_irq = 0x00;
     ACIA_UPDATE_STAT;
 }
 
 void __not_in_flash() acia_write(uint8_t data){
+    acia_trace('W', data);
     acia_tx_data = data;
     __dmb();
     acia_stat_tx = 0x00;
@@ -375,11 +423,13 @@ void __not_in_flash() acia_write(uint8_t data){
 }
 
 void __not_in_flash() acia_cmd(uint8_t data){
+    acia_trace('C', data);
     acia_io->cmd = data;
     __dmb();
     acia_cmd_todo = true;
 }
 void __not_in_flash() acia_ctrl(uint8_t data){
+    acia_trace('T', data);
     acia_io->ctrl = data;
     __dmb();
     acia_ctrl_todo = true;
