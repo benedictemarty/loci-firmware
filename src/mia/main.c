@@ -9,6 +9,7 @@
 #include "api/api.h"
 #include "api/clk.h"
 #include "api/dir.h"
+#include "api/math.h"
 #include "api/mnt.h"
 #include "api/oem.h"
 #include "api/rng.h"
@@ -320,6 +321,9 @@ bool main_api(uint8_t operation)
         break;
     case 0xA7:
         map_api_set_bank();
+        break;
+    case 0xA9:
+        math_api();
         break;
     default:
         return false;

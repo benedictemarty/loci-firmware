@@ -120,6 +120,7 @@ target_sources(loci-firmware PRIVATE
     mia/api/api.c
     mia/api/clk.c
     mia/api/dir.c
+    mia/api/math.c
     mia/api/mnt.c
     mia/api/oem.c
     mia/api/rng.c
