@@ -42,6 +42,11 @@
 /* 3.4 Pont MBF (BASIC Oric, style MS/CBM) <-> IEEE754 */
 #define MATH_MBF_TO_IEEE 0x30
 #define MATH_IEEE_TO_MBF 0x31
+/* 3.5 Opérations par bloc sur vecteurs XRAM (f32, little-endian) */
+#define MATH_VEC_DOT     0x40  /* dot(A,B,count)               -> f32           */
+#define MATH_VEC_SCALE   0x41  /* x[i] *= a (in-place)         (précise §3.5)    */
+#define MATH_POLY_EVAL   0x42  /* Horner sum c[i]*x^i, i=0..deg -> f32          */
+#define MATH_BLOCK_MAX   256   /* borne par appel (synchrone ; cf. §4bis)        */
 
 /* ---- bit-cast f32 <-> u32 (aucun UB, memcpy optimisé en no-op) ---- */
 static inline uint32_t math_f2b(float f)  { uint32_t b; memcpy(&b, &f, 4); return b; }
@@ -102,6 +107,38 @@ static inline int math_f32_to_mbf5(float f, uint8_t out[5]) {
     out[3] = (uint8_t)((mant >> 8) & 0xFFu);
     out[4] = (uint8_t)(mant & 0xFFu);
     return 1;
+}
+
+/* ---- Ops par bloc (fonctions PURES : opèrent sur un buffer mémoire quelconque
+ *      -> testables en natif ; math_api() passe (uint8_t*)xram). f32 LE. ---- */
+static inline float math_xram_getf32(const uint8_t *mem, uint16_t off) {
+    uint32_t b = (uint32_t)mem[off] | ((uint32_t)mem[(uint16_t)(off+1)] << 8) |
+                 ((uint32_t)mem[(uint16_t)(off+2)] << 16) | ((uint32_t)mem[(uint16_t)(off+3)] << 24);
+    return math_b2f(b);
+}
+static inline void math_xram_setf32(uint8_t *mem, uint16_t off, float v) {
+    uint32_t b = math_f2b(v);
+    mem[off] = (uint8_t)b; mem[(uint16_t)(off+1)] = (uint8_t)(b >> 8);
+    mem[(uint16_t)(off+2)] = (uint8_t)(b >> 16); mem[(uint16_t)(off+3)] = (uint8_t)(b >> 24);
+}
+static inline float math_vec_dot(const uint8_t *mem, uint16_t a, uint16_t b, uint16_t count) {
+    float acc = 0.0f;
+    for (uint16_t i = 0; i < count; ++i)
+        acc += math_xram_getf32(mem, (uint16_t)(a + 4*i)) * math_xram_getf32(mem, (uint16_t)(b + 4*i));
+    return acc;
+}
+static inline void math_vec_scale(uint8_t *mem, uint16_t ptr, uint16_t count, float a) {
+    for (uint16_t i = 0; i < count; ++i) {
+        uint16_t o = (uint16_t)(ptr + 4*i);
+        math_xram_setf32(mem, o, a * math_xram_getf32(mem, o));
+    }
+}
+static inline float math_poly_eval(const uint8_t *mem, uint16_t ptr, uint16_t degree, float x) {
+    /* Horner : c[deg]..c[0], résultat = ((c[deg]*x + c[deg-1])*x + ...) + c[0] */
+    float acc = math_xram_getf32(mem, (uint16_t)(ptr + 4*degree));
+    for (int i = (int)degree - 1; i >= 0; --i)
+        acc = acc * x + math_xram_getf32(mem, (uint16_t)(ptr + 4*(uint16_t)i));
+    return acc;
 }
 
 /* Handler ABI (firmware) : lit API_A + xstack, calcule, retourne. */

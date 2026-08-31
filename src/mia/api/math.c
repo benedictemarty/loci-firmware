@@ -11,6 +11,7 @@
 
 #include "api/api.h"
 #include "api/math.h"
+#include "sys/mem.h"   /* xram[] pour les ops par bloc */
 #include <math.h>
 
 /* Retour d'un f32 en AX:sreg (bit-cast). */
@@ -183,6 +184,30 @@ void math_api(void)
         api_push_n(m, 5);          /* m[0] (exposant) au sommet, comme Phosphoric */
         api_sync_xstack();
         api_return_released();
+        break;
+    }
+
+    /* ---------- 3.5 Ops par bloc sur vecteurs XRAM (synchrones, bornées) ---------- */
+    case MATH_VEC_DOT: {   /* dot(ptrA, ptrB, count) -> f32 */
+        uint16_t ptrA, ptrB, count;
+        if (!api_pop_uint16(&count) || !api_pop_uint16(&ptrB) || !api_pop_uint16_end(&ptrA)) return;
+        if (count > MATH_BLOCK_MAX) { api_return_errno(API_ERANGE); break; }
+        math_return_f32(math_vec_dot((const uint8_t *)xram, ptrA, ptrB, count));
+        break;
+    }
+    case MATH_VEC_SCALE: {  /* x[i] *= a (in-place) : ptr, count, a(f32) */
+        uint16_t ptr, count; uint32_t a;
+        if (!api_pop_uint32(&a) || !api_pop_uint16(&count) || !api_pop_uint16_end(&ptr)) return;
+        if (count > MATH_BLOCK_MAX) { api_return_errno(API_ERANGE); break; }
+        math_vec_scale((uint8_t *)xram, ptr, count, math_b2f(a));
+        api_return_axsreg(0);   /* succès (in-place, pas de valeur) */
+        break;
+    }
+    case MATH_POLY_EVAL: {  /* Horner : ptr coeffs, degree, x(f32) -> f32 */
+        uint16_t ptr, degree; uint32_t x;
+        if (!api_pop_uint32(&x) || !api_pop_uint16(&degree) || !api_pop_uint16_end(&ptr)) return;
+        if (degree > MATH_BLOCK_MAX) { api_return_errno(API_ERANGE); break; }
+        math_return_f32(math_poly_eval((const uint8_t *)xram, ptr, degree, math_b2f(x)));
         break;
     }
 
