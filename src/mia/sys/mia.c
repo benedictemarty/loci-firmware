@@ -46,6 +46,7 @@ static uint16_t saved_reset_vec_bas;
 static uint16_t saved_reset_vec_dev;
 static uint16_t saved_brk_vec_bas;
 static uint16_t saved_brk_vec_dev;
+static uint8_t  saved_tramp_rom[16];   // [0004] octets ROM ecrases par le trampoline relocalise ($FF00..)
 static uint16_t rw_addr;
 static volatile int32_t rw_pos;
 static volatile int32_t rw_end;
@@ -161,10 +162,16 @@ void mia_run(void)
     saved_reset_vec_dev = XRAMW(0xBFFC);
     saved_brk_vec_bas   = XRAMW(0xFFFE);
     saved_brk_vec_dev   = XRAMW(0xBFFE);
-    XRAMW(0xFFFC) = 0x03B0;
-    XRAMW(0xBFFC) = 0x03B0;
-    XRAMW(0xFFFE) = 0x03B0;
-    XRAMW(0xBFFE) = 0x03B0;
+    // [0004] Trampoline relocalise en $FF00 (overlay $C000-$FFFF, servi SANS snoop) :
+    // supprime le snoop des fetches d'instruction (cause racine du debordement FIFO).
+    // $FF00.. fait partie de l'image ROM (oric_bank3) -> sauvegarde/restauration.
+    MIA_READ_PIO->txf[MIA_READ_ADDR_SM] = (0x2000C000 >> 14); // $C000-$FFFF depuis oric_bank3
+    for (unsigned i = 0; i < sizeof(saved_tramp_rom); i++)
+        saved_tramp_rom[i] = xram[0xFF00 + i];
+    XRAMW(0xFFFC) = 0xFF00;
+    XRAMW(0xBFFC) = 0xFF00;
+    XRAMW(0xFFFE) = 0xFF00;
+    XRAMW(0xBFFE) = 0xFF00;
     action_watchdog_timer = delayed_by_us(get_absolute_time(),
                                           cpu_get_reset_us() +
                                               MIA_WATCHDOG_MS * 1000);
@@ -184,16 +191,23 @@ void mia_run(void)
         // 03B7  EA        NOP
         // 03B8  50 F7     BVC $03B0
         //mia_set_watch_address(0xFFF6);
-        IOREGS(0x03B0) = 0x78;
-        IOREGS(0x03B1) = 0xA9;
-        IOREGS(0x03B2) = mbuf[rw_pos];
-        IOREGS(0x03B3) = 0x8D;
-        IOREGS(0x03B4) = rw_addr & 0xFF;
-        IOREGS(0x03B5) = rw_addr >> 8;
-        IOREGS(0x03B6) = 0xB8;
-        IOREGS(0x03B7) = 0xEA;
-        IOREGS(0x03B8) = 0x50;
-        IOREGS(0x03B9) = 0xF7;
+        // [0004] Relocalise en $FF00 ; synchro par STA $03BE explicite (page $03) au lieu
+        // du fetch-snoop de $03B6 (les fetches ne sont plus snoopes hors page $03).
+        // FF00 78       SEI ; FF01 A9 imm LDA# ; FF03 8D ll hh STA $rw_addr
+        // FF06 8D BE 03 STA $03BE (sync) ; FF09 B8 CLV ; FF0A 50 F5 BVC $FF01
+        xram[0xFF00] = 0x78;
+        xram[0xFF01] = 0xA9;
+        xram[0xFF02] = mbuf[rw_pos];
+        xram[0xFF03] = 0x8D;
+        xram[0xFF04] = rw_addr & 0xFF;
+        xram[0xFF05] = rw_addr >> 8;
+        xram[0xFF06] = 0x8D;
+        xram[0xFF07] = 0xBE;
+        xram[0xFF08] = 0x03;
+        xram[0xFF09] = 0xB8;
+        xram[0xFF0A] = 0x50;
+        xram[0xFF0B] = 0xF5;
+        __dmb();
         break;
     case action_state_read:
     case action_state_verify:
@@ -207,16 +221,20 @@ void mia_run(void)
         // 03B4  8D BC 03  STA $03BC/$03BD
         // 03B7  B8        CLV
         // 03B8  50 F7     BVC $03B0
-        IOREGS(0x03B0) = 0x78;
-        IOREGS(0x03B1) = 0xAD;
-        IOREGS(0x03B2) = rw_addr & 0xFF;
-        IOREGS(0x03B3) = rw_addr >> 8;
-        IOREGS(0x03B4) = 0x8D;
-        IOREGS(0x03B5) = (action_state == action_state_verify) ? 0xBC : 0xBD;
-        IOREGS(0x03B6) = 0x03;
-        IOREGS(0x03B7) = 0xB8;
-        IOREGS(0x03B8) = 0x50;
-        IOREGS(0x03B9) = 0xF7;
+        // [0004] Relocalise en $FF00 (fetches non snoopes) ; STA $03BC/$03BD reste le sync.
+        // FF00 78 SEI ; FF01 AD ll hh LDA $rw_addr ; FF04 8D BD 03 STA $03BC/$03BD
+        // FF07 B8 CLV ; FF08 50 F7 BVC $FF01
+        xram[0xFF00] = 0x78;
+        xram[0xFF01] = 0xAD;
+        xram[0xFF02] = rw_addr & 0xFF;
+        xram[0xFF03] = rw_addr >> 8;
+        xram[0xFF04] = 0x8D;
+        xram[0xFF05] = (action_state == action_state_verify) ? 0xBC : 0xBD;
+        xram[0xFF06] = 0x03;
+        xram[0xFF07] = 0xB8;
+        xram[0xFF08] = 0x50;
+        xram[0xFF09] = 0xF7;
+        __dmb();
         break;
     default:
         break;
@@ -249,6 +267,9 @@ void mia_stop(void)
         XRAMW(0xBFFC) = saved_reset_vec_dev;
         XRAMW(0xFFFE) = saved_brk_vec_bas;
         XRAMW(0xBFFE) = saved_brk_vec_dev;
+        // [0004] restaure les octets ROM ecrases par le trampoline relocalise ($FF00..)
+        for (unsigned i = 0; i < sizeof(saved_tramp_rom); i++)
+            xram[0xFF00 + i] = saved_tramp_rom[i];
         saved_vectors = false;
     }
 }
@@ -919,12 +940,13 @@ void __not_in_flash() act_loop(void)
                         break;
                     case CASE_WRITE(0x03BD): // action read
                         if (++rw_pos >= rw_end){
-                            IOREGS(0x03B9) = 0xFE;
+                            xram[0xFF09] = 0xFE;   // [0004] stop : BVC -> spin sur place
                             action_result = -2;
                             stop_requested = true;
                         }else{
-                            IOREGSW(0x03B2) = ++rw_addr;
+                            *(uint16_t *)&xram[0xFF02] = ++rw_addr;  // [0004] maj operande LDA
                         }
+                        __dmb();
                         data = wait_act_data();
                         mbuf[rw_pos-1] = data;
                         break;                        
@@ -933,11 +955,26 @@ void __not_in_flash() act_loop(void)
                         if (mbuf[rw_pos] != data && action_result < 0)
                             action_result = rw_addr;
                         if (++rw_pos >= rw_end){
-                            IOREGS(0x03B9) = 0xFE;
+                            xram[0xFF09] = 0xFE;   // [0004] stop : BVC -> spin sur place
                             action_result = -2;
                             stop_requested = true;
                         }else{
-                            IOREGSW(0x03B2) = ++rw_addr;
+                            *(uint16_t *)&xram[0xFF02] = ++rw_addr;  // [0004] maj operande LDA
+                        }
+                        __dmb();
+                        break;
+                    case CASE_WRITE(0x03BE): // [0004] action write sync (trampoline relocalise)
+                        data = wait_act_data();   // consomme le mot donnee du STA $03BE
+                        if(action_state == action_state_write){
+                            if (++rw_pos >= rw_end){
+                                xram[0xFF0B] = 0xFE;   // stop : BVC -> spin sur place
+                                action_result = -2;
+                                stop_requested = true;
+                            }else{
+                                xram[0xFF02] = mbuf[rw_pos];             // prochain immediat
+                                *(uint16_t *)&xram[0xFF04] = ++rw_addr;  // prochaine adresse STA
+                            }
+                            __dmb();
                         }
                         break;
                     case CASE_WRITE(0x319):
