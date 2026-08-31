@@ -688,9 +688,27 @@ void mia_set_rom_ram_enable(bool device_rom, bool basic_rom){
     mia_set_rom_ram_enable_inline_switch(flags);
 }
 
+/* Borne d'attente du 2e mot FIFO (donnee d'une ecriture page $03).
+ * Cas normal : le mot est deja la ou arrive en quelques iterations.
+ * Le plafond n'existe que pour empecher un blocage PERMANENT de core 1
+ * en cas de desynchro/perte de mot FIFO (cf. analyse "hanging transfers") :
+ * sans lui, si le 2e mot n'arrive jamais (6502 parque/reset), la boucle
+ * spinne sans fin et le watchdog core 0 ne peut pas la debloquer. */
+#define MIA_ACT_DATA_TIMEOUT 100000u
+
 static inline __attribute__((always_inline)) uint8_t wait_act_data(void){
     __dmb();
-    while((MIA_ACT_PIO->fstat & (1u << (PIO_FSTAT_RXEMPTY_LSB + MIA_ACT_SM)))){}
+    uint32_t guard = MIA_ACT_DATA_TIMEOUT;
+    while((MIA_ACT_PIO->fstat & (1u << (PIO_FSTAT_RXEMPTY_LSB + MIA_ACT_SM)))){
+        if(!--guard){
+            mia_io_errors++;
+            if(action_state != action_state_idle){
+                action_result = -3;      // abandonne le transfert en cours
+                stop_requested = true;   // core 0 fera mia_stop() proprement
+            }
+            return 0;
+        }
+    }
     return (MIA_ACT_PIO->rxf[MIA_ACT_SM])>>16 & 0xFF;
 }
 
