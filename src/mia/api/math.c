@@ -168,6 +168,24 @@ void math_api(void)
         math_return_f32(powf(math_b2f(a), math_b2f(b))); break;
     }
 
+    /* ---------- 3.4 Pont MBF <-> IEEE754 ---------- */
+    case MATH_MBF_TO_IEEE: {
+        uint8_t m[5];   /* m[0]=exposant au sommet ; m[4]=fond (dépilé en dernier) */
+        if (!api_pop_uint8(&m[0]) || !api_pop_uint8(&m[1]) || !api_pop_uint8(&m[2])
+            || !api_pop_uint8(&m[3]) || !api_pop_uint8_end(&m[4])) return;
+        math_return_f32(math_mbf5_to_f32(m));
+        break;
+    }
+    case MATH_IEEE_TO_MBF: {
+        uint32_t a; uint8_t m[5];
+        if (!api_pop_uint32_end(&a)) return;
+        if (!math_f32_to_mbf5(math_b2f(a), m)) { api_return_errno(API_ERANGE); break; }
+        api_push_n(m, 5);          /* m[0] (exposant) au sommet, comme Phosphoric */
+        api_sync_xstack();
+        api_return_released();
+        break;
+    }
+
     default:
         api_return_errno(API_EINVAL);
         break;

@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 /* ---- Sous-codes (API_A) — figés depuis la spec §3 ---- */
 /* 3.1 Entiers */
@@ -38,6 +39,9 @@
 #define MATH_FLOG        0x25
 #define MATH_FEXP        0x26
 #define MATH_FPOW        0x27
+/* 3.4 Pont MBF (BASIC Oric, style MS/CBM) <-> IEEE754 */
+#define MATH_MBF_TO_IEEE 0x30
+#define MATH_IEEE_TO_MBF 0x31
 
 /* ---- bit-cast f32 <-> u32 (aucun UB, memcpy optimisé en no-op) ---- */
 static inline uint32_t math_f2b(float f)  { uint32_t b; memcpy(&b, &f, 4); return b; }
@@ -65,6 +69,39 @@ static inline uint32_t math_divmod_u32(uint32_t a, uint32_t b, uint32_t *rem) {
 static inline int32_t  math_divmod_i32(int32_t a, int32_t b, int32_t *rem) {
     if (b == 0) { *rem = 0; return 0; }
     *rem = a % b; return a / b;
+}
+
+/* ---- Pont MBF 5 octets <-> IEEE754 f32 (fonctions PURES, cf. Phosphoric) ----
+ * MBF : m[0]=exposant biaisé de 128 (0 => zéro) ; m[1..4]=mantisse 32 bits
+ * big-endian, bit7 de m[1]=SIGNE (le 1 de tête implicite à cette position).
+ * Valeur = (-1)^signe · mantisse · 2^(exp-160). MBF 1.0 = {81 00 00 00 00}. */
+static inline float math_mbf5_to_f32(const uint8_t m[5]) {
+    if (m[0] == 0) return 0.0f;                              /* exposant 0 = zéro */
+    uint8_t sign = m[1] & 0x80u;
+    uint32_t mant = ((uint32_t)(m[1] | 0x80u) << 24) | ((uint32_t)m[2] << 16) |
+                    ((uint32_t)m[3] << 8) | (uint32_t)m[4]; /* 1 implicite restauré */
+    double val = ldexp((double)mant, (int)m[0] - 160);
+    return (float)(sign ? -val : val);
+}
+/* Renvoie false si non représentable en MBF (Inf/NaN, overflow d'exposant) ;
+ * underflow -> 0 (MBF n'a pas de dénormaux). */
+static inline int math_f32_to_mbf5(float f, uint8_t out[5]) {
+    if (isnan(f) || isinf(f)) return 0;
+    if (f == 0.0f) { memset(out, 0, 5); return 1; }
+    int sign = signbit(f) ? 0x80 : 0x00;
+    double a = fabs((double)f);
+    int e; double frac = frexp(a, &e);                      /* a = frac·2^e, frac∈[0.5,1) */
+    uint64_t mant = (uint64_t)llround(frac * 4294967296.0); /* frac·2^32 */
+    if (mant >= 0x100000000ULL) { mant >>= 1; e += 1; }     /* arrondi -> 2^32 : renormaliser */
+    int exp = e + 128;
+    if (exp > 255) return 0;                                /* overflow */
+    if (exp < 1) { memset(out, 0, 5); return 1; }           /* underflow -> 0 */
+    out[0] = (uint8_t)exp;
+    out[1] = (uint8_t)(((mant >> 24) & 0x7Fu) | (uint32_t)sign);
+    out[2] = (uint8_t)((mant >> 16) & 0xFFu);
+    out[3] = (uint8_t)((mant >> 8) & 0xFFu);
+    out[4] = (uint8_t)(mant & 0xFFu);
+    return 1;
 }
 
 /* Handler ABI (firmware) : lit API_A + xstack, calcule, retourne. */
