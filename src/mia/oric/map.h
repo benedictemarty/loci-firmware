@@ -28,4 +28,7 @@ void map_api_tune_tiow(void);
 void map_api_tune_tiod(void);
 void map_api_tune_tadr(void);
 
+//Prototype banking: MIA_OP_SET_BANK ($A7). API_A: bit7=enable, bits3:0=bank sel.
+void map_api_set_bank(void);
+
 #endif /* _MAP_H_ */

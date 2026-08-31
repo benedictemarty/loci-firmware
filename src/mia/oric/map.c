@@ -9,6 +9,7 @@
 #include "sys/cfg.h"
 #include "sys/ext.h"
 #include "sys/mem.h"
+#include "sys/mia.h"
 #include "sys/ssd.h"
 #include "api/api.h"
 #include "pico/stdlib.h"
@@ -79,6 +80,16 @@ void map_api_tune_tadr(void)
 {
     uint8_t delay = API_A;          //Range 0-7 for setting, other return current
     api_sync_xstack();              //For safety only
-    cfg_set_read_addr_delay(delay);        
+    cfg_set_read_addr_delay(delay);
     return api_return_ax(cfg_get_read_addr_delay());
+}
+//Prototype banking (MIA_OP_SET_BANK $A7)
+//API_A: bit7 = enable overlay+MAP, bits3:0 = bank select (0..3 allocated)
+//Returns the applied value. See docs/spec-registre-banque.md
+void map_api_set_bank(void)
+{
+    uint8_t a = API_A;
+    api_sync_xstack();              //For safety only
+    mia_set_bank(a & 0x0F, !!(a & 0x80));
+    return api_return_ax(a);
 }

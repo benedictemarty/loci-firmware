@@ -723,6 +723,25 @@ void mia_set_rom_ram_enable(bool device_rom, bool basic_rom){
  * spinne sans fin et le watchdog core 0 ne peut pas la debloquer. */
 #define MIA_ACT_DATA_TIMEOUT 100000u
 
+//Prototype banking: expose a selectable 16kB overlay bank in $C000-$FFFF.
+//Uses the same bare PIO pokes as the action loop:
+// - MAP driven on the $C000 window (SM1), $E000 window off (single 16kB bank)
+// - the served bank = SRAM cortex base >> 14 pushed to the read-addr SM
+//sel indexes the 16kB XRAM banks (0..3 currently allocated in mem.h).
+//enable=false restores internal Basic ROM passthrough (no overlay/MAP).
+//See docs/spec-registre-banque.md
+void mia_set_bank(uint8_t sel, bool enable){
+    if(!enable){
+        mia_set_rom_ram_enable(false, true);   //passthrough: internal Basic ROM
+        return;
+    }
+    uint32_t base = 0x20000000u + ((uint32_t)(sel & 0x03) << 14);   //16kB per bank
+    MIA_MAP_PIO->sm[MIA_MAP_SM1].instr = PIO_OP_ON_C;   //MAP active for $C000-$FFFF
+    MIA_MAP_PIO->sm[MIA_MAP_SM2].instr = PIO_OP_OFF;    //single 16kB window
+    MIA_READ_PIO->txf[MIA_READ_ADDR_SM] = (base >> 14); //serve selected bank
+    map_flags = 0x00;                                   //overlay active (see switch)
+}
+
 static inline __attribute__((always_inline)) uint8_t wait_act_data(void){
     __dmb();
     uint32_t guard = MIA_ACT_DATA_TIMEOUT;

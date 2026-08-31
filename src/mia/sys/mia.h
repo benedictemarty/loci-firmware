@@ -60,6 +60,11 @@ uint32_t mia_buf_crc32();
 void mia_set_rom_ram_enable(bool device_rom, bool basic_rom);
 void mia_set_rom_ram_enable_switch(uint8_t data);
 
+//Prototype banking: select a 16kB overlay bank in the $C000-$FFFF window.
+//sel = bank index (0..3 allocated in XRAM), enable = drive overlay + MAP.
+//See docs/spec-registre-banque.md
+void mia_set_bank(uint8_t sel, bool enable);
+
 //Call boot from Oric - typical from CUmini ROM
 void mia_api_boot(void);
 

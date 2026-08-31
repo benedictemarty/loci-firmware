@@ -318,6 +318,9 @@ bool main_api(uint8_t operation)
     case 0xA6:
         adj_scan();
         break;
+    case 0xA7:
+        map_api_set_bank();
+        break;
     default:
         return false;
     }
