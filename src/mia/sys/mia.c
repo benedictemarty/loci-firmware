@@ -735,6 +735,17 @@ void __not_in_flash() act_loop(void)
     // In here we bypass the usual SDK calls as needed for performance.
     while (true)
     {
+        // [0003] Detection de debordement FIFO pendant une action : au lieu d'une
+        // desynchro silencieuse (-> hanging transfer), on compte l'erreur et on
+        // abandonne proprement (le watchdog/mia_stop finalise sur core 0).
+        if (action_state != action_state_idle &&
+            (MIA_ACT_PIO->fdebug & (1u << (PIO_FDEBUG_RXSTALL_LSB + MIA_ACT_SM))))
+        {
+            MIA_ACT_PIO->fdebug = (1u << (PIO_FDEBUG_RXSTALL_LSB + MIA_ACT_SM));
+            mia_io_errors++;
+            action_result = -3;
+            stop_requested = true;
+        }
         if (!(MIA_ACT_PIO->fstat & (1u << (PIO_FSTAT_RXEMPTY_LSB + MIA_ACT_SM))))
         {
             uint32_t rw_data_addr = MIA_ACT_PIO->rxf[MIA_ACT_SM];
@@ -1273,10 +1284,12 @@ static void mia_act_pio_init(void)
     sm_config_set_in_pins(&config, A_PIN_BASE);
     sm_config_set_in_shift(&config, false, true, 25);
     sm_config_set_jmp_pin(&config, RnW_PIN);
+    // [0003] FIFO RX profonde (4->8 mots) : absorbe le stall de wait_act_data() par
+    // iteration de transfert (~1 periode PHI2), qui est le declencheur du debordement.
+    sm_config_set_fifo_join(&config, PIO_FIFO_JOIN_RX);
     pio_sm_init(MIA_ACT_PIO, MIA_ACT_SM, offset, &config);
-    pio_sm_put(MIA_ACT_PIO, MIA_ACT_SM, 0x0300 >> 8);
-    pio_sm_exec_wait_blocking(MIA_ACT_PIO, MIA_ACT_SM, pio_encode_pull(false, true));
-    pio_sm_exec_wait_blocking(MIA_ACT_PIO, MIA_ACT_SM, pio_encode_mov(pio_y, pio_osr));
+    // TX FIFO desormais joint au RX : charger y (=page 0x03) via SET au lieu du TX.
+    pio_sm_exec_wait_blocking(MIA_ACT_PIO, MIA_ACT_SM, pio_encode_set(pio_y, 0x0300 >> 8));
     pio_sm_set_enabled(MIA_ACT_PIO, MIA_ACT_SM, true);
     multicore_launch_core1(act_loop);
 }
