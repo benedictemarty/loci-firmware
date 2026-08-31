@@ -31,7 +31,13 @@
 
 //volatile uint8_t mia_iopage_enable_map[64] __attribute__((aligned(64)));
 static uint32_t mia_iopage_read_enable_map[2];
-static uint32_t mia_iopage_write_enable_map[2];  
+static uint32_t mia_iopage_write_enable_map[2];
+// --- Optim read-serve (perf/read-serve) : raccourcit le chemin critique de service
+//     de lecture dans act_loop (voir analyse read-path). Deux leviers :
+//   1) table de service directe : 1 ldrb au lieu du calcul de bit sur la enable-map
+//   2) registre DMA trig + base iopage précalculés : évite de reconstruire l'adresse
+static uint8_t mia_iopage_read_serve[256];        // 1 = servir la lecture (index = addr & 0xFF)
+static volatile uint32_t *mia_read_trig_reg;      // &al3_read_addr_trig du canal DMA (précalculé)
 
 static enum state {
     action_state_idle = 0,
@@ -725,8 +731,8 @@ static __attribute__((optimize("O1"))) void act_loop(void)
             }
             */
             if(!(rw_data_addr & 0x01000000)){  //Handle io page reads. Save PIO cycles
-                (&dma_hw->ch[mia_read_dma_channel])->al3_read_addr_trig = (uintptr_t)((uint32_t)&iopage | (rw_data_addr & 0xFF));
-                read_enable = !!((mia_iopage_read_enable_map[(rw_data_addr & 0x00000080)>>7]) & (1UL << ((rw_data_addr >> 2) & 0x1F)));
+                *mia_read_trig_reg = (uint32_t)iopage | (rw_data_addr & 0xFF);
+                read_enable = mia_iopage_read_serve[rw_data_addr & 0xFF];
                 if(read_enable){
                     MIA_IO_READ_PIO->irq = 1u << 5;
                 }
@@ -1203,6 +1209,10 @@ static void mia_read_pio_init(void)
     int addr_chan = dma_claim_unused_channel(true);
     int data_chan = dma_claim_unused_channel(true);
     mia_read_dma_channel = data_chan;
+    // Optim read-serve : précalcule le registre trig du DMA et la base iopage
+    // (le canal n'est connu qu'ici). act_loop tourne déjà mais reste bloqué sur le
+    // FIFO tant que le 6502 n'est pas lancé, donc pas de course sur ces variables.
+    mia_read_trig_reg = &((&dma_hw->ch[mia_read_dma_channel])->al3_read_addr_trig);
 
     // DMA move the requested memory data to PIO for output
     dma_channel_config data_dma = dma_channel_get_default_config(data_chan);
@@ -1487,7 +1497,12 @@ void mia_init(void)
     for(int i=(0xA0 >> 2); i<=(0xBF >> 2); i++){
         mia_iopage_read_enable_map[1] |= (0x1UL << (i & 0x1F));
     }
-   
+    //Optim read-serve : dérive la table de service directe depuis les enable-maps
+    //(source unique de vérité). Remplie avant le lancement de core1 (mia_act_pio_init).
+    for(int o=0; o<256; o++){
+        mia_iopage_read_serve[o] = (mia_iopage_read_enable_map[(o & 0x80) >> 7] >> ((o >> 2) & 0x1F)) & 1u;
+    }
+
    //LOCI identity marker
    IOREGS(0x0319) = 'L';
 
