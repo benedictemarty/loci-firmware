@@ -4,6 +4,33 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-01 — Opcode `$A8` MIA_OP_STREAM_BANK (branche `feature/stream-bank-A8`)
+
+Base : branche `feature/stream-bank-A8`, créée sur `fix/full-A7` (qui apporte
+l'opcode banking `$A7` / `map_api_set_bank` / `mia_set_bank`).
+
+#### Added
+- `src/mia/api/std.c` : handler **`std_api_stream_bank()`** (opcode `$A8`) —
+  streamer read-only fichier → banque 16 Ko en un seul fastcall
+  (`lseek` SEEK_SET + `read` dans `xram[(SEL<<14)+dst]`, puis mapping optionnel
+  `$C000-$FFFF` si bit MAP). Calqué sur `std_api_lseek` / `std_api_read_xram`.
+  Argument A = `MAP|SEL` ; xstack `fd,off,dst,len`. Retour AX = octets lus.
+- `src/mia/main.c` : dispatch `case 0xA8`. `src/mia/api/std.h` : prototype.
+- `tests/stream_bank_model_test.c` (+ `tests/Makefile`) : tests natifs de la
+  logique pure (bornage `len`, adressage, rejets EINVAL, garde débordement,
+  mapping conditionnel). 6 cas OK.
+
+#### Notes
+- Mapping `map=1` via **`mia_set_bank(sel,true)`**, même chemin (cœur 0) que
+  `$A7` — pas de routage cœur 1 réinventé (question ouverte commune `$A7`/`$A8`,
+  spec §4.1-5). Lecture flash/LFS synchrone = seul blocage cœur 0 toléré.
+  `__dmb()` après lecture avant mapping.
+- Strictement additif : `default: return false` préservé → `$A8` détectable côté
+  6502, aucune fonctionnalité existante modifiée.
+- **Compilé et lié** (`ninja` → `loci-firmware.elf`, RAM 26,35 %). ⚠️ **Non
+  validé en runtime** : validation Phosphoric `--loci` puis matériel restante.
+- Réf : `extensions/streamer-A8/spec-streamer-assets.md` (niveau 1, §4).
+
 ### 2026-08-17 — Stratégie C portée : binaire FLASH/XIP, RAM libérée, STD_FIL_MAX restauré à 16
 
 Portage sur la branche `webdisk` de la **Stratégie C** conçue dans `loci-fw`

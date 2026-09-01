@@ -8,8 +8,10 @@
 #include "api/std.h"
 #include "sys/com.h"
 #include "sys/cpu.h"
+#include "sys/mia.h"
 //#include "sys/pix.h"
 #include "hardware/pio.h"
+#include "hardware/sync.h"
 #include "fatfs/ff.h"
 #include "sys/lfs.h"
 #include "hardware/flash.h"
@@ -432,6 +434,78 @@ void std_api_lseek(void)
             pos = 0x7FFFFFFF;
         return api_return_axsreg(pos);
     }
+}
+
+/*
+ * MIA_OP_STREAM_BANK ($A8) — streamer read-only fichier -> banque 16 Ko.
+ *
+ * Un seul fastcall = lseek(SEEK_SET) + read dans la zone XRAM de la banque SEL,
+ * puis (option MAP) mapping de la banque en $C000-$FFFF via le meme chemin que
+ * $A7 (map_api_set_bank -> mia_set_bank, cote coeur 0).
+ *
+ * Argument (registre A) : bit7 MAP, bits3:0 SEL (0..3).
+ * xstack (pousse par l'appelant, depile ici en LIFO) :
+ *   fd (int8)  off (int32, SEEK_SET)  dst (uint16, 0..0x3FFF)  len (uint16)
+ * Retour (AX) : octets reellement lus, ou -1 + errno.
+ *
+ * Cf. extensions/streamer-A8/spec-streamer-assets.md (niveau 1, §4).
+ */
+void std_api_stream_bank(void)
+{
+    uint8_t a = API_A;
+    uint8_t sel = a & 0x0F;
+    bool map = !!(a & 0x80);
+    uint16_t len, dst;
+    int32_t off;
+    int8_t fd8;
+    // Depilage LIFO : dernier pousse (len) en premier ; fd (premier pousse) en _end.
+    if (!api_pop_uint16(&len) ||
+        !api_pop_uint16(&dst) ||
+        !api_pop_int32(&off) ||
+        !api_pop_int8_end(&fd8))
+        return api_return_errno(API_EINVAL);
+    int fd = fd8;
+    // fichier reel requis (pas stdin), banque allouee 0..3, offset intra-banque.
+    if (fd < STD_FIL_OFFS ||
+        fd >= STD_LFS_MAX + STD_LFS_OFFS ||
+        sel > 3 ||
+        dst > 0x3FFF)
+        return api_return_errno(API_EINVAL);
+    // Bornage de la longueur a l'interieur de la banque 16 Ko.
+    if (len > (uint16_t)(0x4000 - dst))
+        len = (uint16_t)(0x4000 - dst);
+    // Cible = xram[(SEL<<14) + dst] (base = 0x20000000 + SEL*0x4000, cf. mia_set_bank).
+    uint8_t *buf = &xram[((uint32_t)sel << 14) + dst];
+    if (buf + len > xram + 0x10000)
+        return api_return_errno(API_EINVAL);
+    // Lecture synchrone : seul blocage coeur 0 tolere (patron std_api_read_xram).
+    int nread;
+    if (fd >= STD_LFS_OFFS)
+    {
+        lfs_file_t *fp = &lfs_fil[fd - STD_LFS_OFFS];
+        int r = lfs_file_seek(&lfs_volume, fp, off, LFS_SEEK_SET);
+        if (r < 0)
+            return api_return_errno(API_ELFSFS(r));
+        nread = lfs_file_read(&lfs_volume, fp, buf, len);
+        if (nread < 0)
+            return api_return_errno(API_ELFSFS(nread));
+    }
+    else
+    {
+        FIL *fp = &std_fil[fd - STD_FIL_OFFS];
+        FRESULT fr = f_lseek(fp, (FSIZE_t)off);
+        if (fr != FR_OK)
+            return api_return_errno(API_EFATFS(fr));
+        UINT br;
+        fr = f_read(fp, buf, len, &br);
+        if (fr != FR_OK)
+            return api_return_errno(API_EFATFS(fr));
+        nread = (int)br;
+    }
+    __dmb(); // stores XRAM visibles avant tout mapping de banque
+    if (map)
+        mia_set_bank(sel, true); // meme chemin que $A7 (coeur 0)
+    return api_return_ax((uint16_t)nread);
 }
 
 void std_api_unlink(void)
