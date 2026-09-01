@@ -54,6 +54,11 @@ volatile uint8_t acia_stat_base;
 volatile uint8_t acia_stat_rx;
 volatile uint8_t acia_stat_tx;
 volatile uint8_t acia_stat_irq;
+// Handshake RX (repris du design initial de Sodium, branche feature/acia) :
+// posé à true quand le 6502 lit le registre STATUS ($x1), remis à false quand
+// le coeur 0 vient de stager un nouvel octet RX. Sert à ne plus ré-asserter
+// inutilement l'IRQ une fois que le CPU a pris connaissance du statut.
+volatile bool acia_stat_checked;
 #define ACIA_UPDATE_STAT  acia_io->stat = acia_stat_base | acia_stat_tx | acia_stat_rx | acia_stat_irq
 
 static int acia_dev;
@@ -145,6 +150,7 @@ void acia_init(void){
     acia_dev = -1;
     acia_rx_buffer_head = 0;
     acia_rx_buffer_tail = 0;
+    acia_stat_checked = true;   //Aucun octet en attente : statut consideré acquitté
 }
 
 void acia_task(void){
@@ -214,12 +220,15 @@ void acia_task(void){
                 acia_rx_buffer_tail = (acia_rx_buffer_tail + 1) & ACIA_RX_BUFFER_IDX_MASK;
                 __dmb();
                 acia_stat_rx = ACIA_STAT_RX_FULL;
+                acia_stat_checked = false;  //Nouvel octet stagé : en attente d'acquittement CPU
                 if(acia_rx_irq_enable){
                     fire_irq = true;
                 }
                 cnt = 255;
             }
-        }else{
+        }else if(!acia_stat_checked){
+            //Octet stagé mais statut pas encore lu par le CPU : rappel IRQ périodique.
+            //Une fois le statut acquitté (acia_stat_checked), on cesse de harceler l'IRQ.
             if(0 == --cnt && acia_rx_irq_enable){
                 fire_irq = true;
             }
@@ -390,6 +399,7 @@ void __not_in_flash() acia_reset(bool hw_reset){
         acia_stat_rx = 0x00;
         acia_stat_tx = ACIA_STAT_TX_EMPTY;
         acia_stat_base = ACIA_STAT_NOT_DSR | ACIA_STAT_NOT_DCD;
+        acia_stat_checked = true;   //Aucun octet en attente après reset matériel
     }else{
         acia_stat_base &= ~ACIA_STAT_OVR_ERR;
         acia_io->data = 0;
@@ -409,6 +419,7 @@ void __not_in_flash() acia_clr_irq(void){
     //acia_io->stat &= ~ACIA_STAT_IRQ;
     __dmb();
     acia_stat_irq = 0x00;
+    acia_stat_checked = true;   //Le 6502 vient de lire STATUS : IRQ/octet acquitté
     ACIA_UPDATE_STAT;
 }
 
