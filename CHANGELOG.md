@@ -4,6 +4,25 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-08 — `copy_to_ram` : corrige le boot sur MATÉRIEL RÉEL (1ʳᵉ extension validée sur silicium)
+
+**Validé sur la vraie cartouche LOCI (sans Oric).** Les builds en « stratégie C » (binaire
+**FLASH/XIP** via `pico_set_binary_type(... default)` + linker `memmap_xram_mia_flash.ld`) **bootaient
+dans l'émulateur mais PAS sur silicium** (LED éteinte = `led_init` jamais atteint), alors que le
+firmware LOCI officiel (`copy_to_ram`) bootait (LED rouge). L'émulateur charge l'ELF sans modéliser le
+XIP/boot2 → le XIP custom passait en émul mais échouait sur la flash réelle. *(Hypothèse implicit-int/
+gcc-14 écartée : 0 déclaration implicite dans tout le build.)*
+
+**Correctif** (`src/CMakeLists.txt`) : `feature/stream-bank-A8` repasse en **`copy_to_ram`** (comme
+l'officiel). Linke à **RAM ~80 %** (210/256 Ko) — tient largement. **Procédure de test HW** (flash via
+`RPI-RP2` en BOOTSEL) : XIP → LED éteinte ; `copy_to_ram` → **LED ROUGE = boote**. ⟹ **1ʳᵉ firmware
+custom LOCI (`$A8`) qui tourne sur matériel réel.**
+
+> ⚠️ La stratégie C (XIP) sert à libérer de la RAM pour empiler beaucoup de features. Elle **casse le
+> boot HW en l'état** : ne la réactiver qu'après avoir fait fonctionner le XIP/boot2/linker sur
+> silicium. Impacte aussi les autres builds XIP (`full-A7`, `coproc-A9`) → à repasser en `copy_to_ram`
+> (s'ils tiennent) pour tourner sur matériel.
+
 ### 2026-09-01 — Opcode `$A8` MIA_OP_STREAM_BANK (branche `feature/stream-bank-A8`)
 
 Base : branche `feature/stream-bank-A8`, créée sur `fix/full-A7` (qui apporte

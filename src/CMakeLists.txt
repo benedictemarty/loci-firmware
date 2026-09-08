@@ -67,12 +67,14 @@ create_resources(${CMAKE_CURRENT_LIST_DIR}/roms ${CMAKE_BINARY_DIR}/loci_roms.h)
 add_executable(loci-firmware)
 pico_add_extra_outputs(loci-firmware)
 pico_set_program_name(loci-firmware "LOCI firmware")
-# Stratégie C (portée depuis loci-fw refactor/strategie-c) : binaire FLASH/XIP au
-# lieu de copy_to_ram. Le code non-critique reste en flash ; seules les fonctions
-# __not_in_flash() (.time_critical) et .scratch_x/y sont en RAM -> libère ~148 Ko de
-# RAM, ce qui rend inutile le workaround STD_FIL_MAX 16->10 et autorise un build -O2.
-pico_set_binary_type(loci-firmware default)
-pico_set_linker_script(loci-firmware ${CMAKE_CURRENT_LIST_DIR}/memmap_xram_mia_flash.ld)
+# copy_to_ram : comme le firmware LOCI officiel. VALIDÉ sur MATÉRIEL RÉEL (cartouche,
+# 2026-09-08) : LED rouge au boot. La « stratégie C » (binaire FLASH/XIP + linker
+# custom memmap_xram_mia_flash.ld), utilisée pour libérer de la RAM, BOOTAIT en
+# émulateur mais PAS sur silicium (LED éteinte) — le XIP/boot2 réel n'était pas
+# franchi. stream-bank-A8 tient en copy_to_ram (RAM ~80 %). Ne réactiver le XIP
+# qu'après l'avoir fait fonctionner sur matériel (boot2/linker/flash).
+pico_set_binary_type(loci-firmware copy_to_ram)
+# pico_set_linker_script(... memmap_xram_mia_flash.ld)  # stratégie C (XIP) — cassait le boot HW
 
 target_include_directories(loci-firmware PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
