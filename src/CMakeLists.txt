@@ -73,8 +73,13 @@ pico_set_program_name(loci-firmware "LOCI firmware")
 # émulateur mais PAS sur silicium (LED éteinte) — le XIP/boot2 réel n'était pas
 # franchi. stream-bank-A8 tient en copy_to_ram (RAM ~80 %). Ne réactiver le XIP
 # qu'après l'avoir fait fonctionner sur matériel (boot2/linker/flash).
-pico_set_binary_type(loci-firmware copy_to_ram)
-# pico_set_linker_script(... memmap_xram_mia_flash.ld)  # stratégie C (XIP) — cassait le boot HW
+# Choix stratégie mémoire : copy_to_ram (défaut, validé HW) OU XIP (-DLOCI_XIP=ON,
+# libère ~130k de RAM mais cassait le boot HW — en cours de diagnostic co-sim).
+if(LOCI_XIP)
+    pico_set_linker_script(loci-firmware ${CMAKE_CURRENT_LIST_DIR}/memmap_xram_mia_flash.ld)
+else()
+    pico_set_binary_type(loci-firmware copy_to_ram)
+endif()
 
 target_include_directories(loci-firmware PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}

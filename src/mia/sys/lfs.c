@@ -6,6 +6,7 @@
 
 #include "sys/lfs.h"
 #include "pico/printf.h"
+#include "hardware/sync.h"   /* save_and_disable_interrupts : indispensable en build XIP */
 
 // 1MB for ROM storage, 512K for Pico W
 // TODO Pico W now using some of this flash for bluetooth
@@ -83,7 +84,12 @@ static int lfs_prog(const struct lfs_config *c, lfs_block_t block,
     uint32_t flash_offs = (PICO_FLASH_SIZE_BYTES - LFS_DISK_SIZE) +
                           (block * FLASH_SECTOR_SIZE) +
                           off;
+    /* flash_range_program COUPE le XIP : en build FLASH/XIP, un IRQ dont l'ISR est en
+     * flash fetcherait du vide → hardfault. On masque les interruptions le temps de
+     * l'écriture (inoffensif en copy_to_ram, où tout est déjà en RAM). */
+    uint32_t ints = save_and_disable_interrupts();
     flash_range_program(flash_offs, buffer, size);
+    restore_interrupts(ints);
     return LFS_ERR_OK;
 }
 
@@ -92,7 +98,10 @@ static int lfs_erase(const struct lfs_config *c, lfs_block_t block)
     (void)(c);
     uint32_t flash_offs = (PICO_FLASH_SIZE_BYTES - LFS_DISK_SIZE) +
                           (block * FLASH_SECTOR_SIZE);
+    /* Idem lfs_prog : masque les interruptions pendant l'erase (XIP coupé). */
+    uint32_t ints = save_and_disable_interrupts();
     flash_range_erase(flash_offs, FLASH_SECTOR_SIZE);
+    restore_interrupts(ints);
     return LFS_ERR_OK;
 }
 

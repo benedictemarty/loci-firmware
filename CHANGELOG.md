@@ -4,6 +4,38 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-09 — CAUSE RACINE du boot HW en build XIP + correctif candidat (masquage IRQ des ops flash)
+Diagnostic via le co-sim `~/loci/emul` de **pourquoi la stratégie C (FLASH/XIP) bootait en émulateur mais
+mourait avant `led_init` sur silicium** (cf. entrée 2026-09-08).
+- **Cause racine** : `src/mia/sys/lfs.c` (`lfs_erase`/`lfs_prog`) appelle `flash_range_erase`/
+  `flash_range_program` **sans masquer les interruptions** (ni `flash_safe_execute`). Sur RP2040 ces
+  fonctions **coupent le XIP** le temps de l'op. Or `init()` lance le **format littlefs (`lfs_init`, ligne
+  72) AVANT `led_init` (ligne 85)** ; en build XIP **63 handlers d'IRQ résident en flash** (`isr_irq0..31`,
+  `isr_hardfault` @`0x100001cc`). Un IRQ pendant l'erase → fetch de l'ISR dans une flash déconnectée →
+  hardfault (lui-même en flash → double faute) → **mort avant la LED**. En `copy_to_ram` tout le code (ISR
+  compris) est en RAM → couper le XIP est inoffensif → boot OK. Explique exactement « XIP casse, copy_to_ram
+  marche ».
+- **Pourquoi invisible en émul** : le co-sim **HLE** `flash_range_erase/program` de façon atomique et traite
+  `flash_exit_xip`/`enter_xip` en **no-op** → le XIP n'est jamais réellement coupé, aucun IRQ ne fetch du
+  flash mort. Limite **structurelle** : le co-sim ne peut pas valider le chemin XIP/boot2 réel.
+- **Correctif candidat** (`src/mia/sys/lfs.c`) : `save_and_disable_interrupts()`/`restore_interrupts()`
+  autour des deux ops flash (`#include "hardware/sync.h"`). Inoffensif en `copy_to_ram`. **⚠ core1** : si
+  l'act_loop (core1) prend des IRQ, un lockout (`flash_safe_execute`/`multicore_lockout`) serait aussi
+  requis — le co-sim montre core1 en **boucle RAM pure** pendant tout le format (4000 pas/op, jamais en
+  flash), donc le masquage core0 est le 1ᵉʳ correctif ; à confirmer sur MATÉRIEL.
+- **Bénéfice double** : le build XIP **corrige aussi** le crash « entrer dans un périphérique » du menu
+  (`oric_bank3=0x2000C000` chevauchait le code `.text`/littlefs en copy_to_ram) — en XIP le code est en flash
+  et la zone `xram`/`oric_bank0-3` (0x20000000-0x10000) est réservée, sans code (RAM à 0x20010000).
+- **Outillage** : `src/CMakeLists.txt` — choix mémoire conditionnel `-DLOCI_XIP=ON` (linker
+  `memmap_xram_mia_flash.ld`), défaut inchangé (`copy_to_ram`). Build XIP dans `build-xip/` (link OK, RAM
+  ~53 Ko / 192 Ko, pas de débordement).
+- **✅ VALIDÉ SUR SILICIUM (2026-09-09)** : `build-xip/.../loci-firmware.uf2` flashé via
+  `/media/bmarty/RPI-RP2` → **LED ROUGE = boote**. **1ᵉʳ build FLASH/XIP qui tourne sur la vraie cartouche.**
+  Le masquage IRQ de core0 **suffit** (pas de lockout core1 nécessaire : l'act_loop reste en RAM). ⟹ **~130 Ko
+  de RAM libérés** ET le crash menu « entrer dans un périphérique » réglé (code hors de `oric_bank3`). La
+  « stratégie C » (XIP) est donc de nouveau utilisable ; à propager aux autres builds (`full-A7`, `coproc-A9`)
+  s'ils tiennent, pour libérer la RAM tout en bootant sur matériel.
+
 ### 2026-09-08 — `copy_to_ram` : corrige le boot sur MATÉRIEL RÉEL (1ʳᵉ extension validée sur silicium)
 
 **Validé sur la vraie cartouche LOCI (sans Oric).** Les builds en « stratégie C » (binaire
