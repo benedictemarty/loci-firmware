@@ -88,35 +88,34 @@ static bool web_write_all(uint8_t dev, const char *s, uint32_t n, uint64_t deadl
     return true;
 }
 
-/* Lit un octet du modem (pompe l'USB), ou -1 sur timeout. */
-static int web_getc(uint8_t dev, uint64_t deadline)
-{
-    uint8_t c;
-    while (time_us_64() <= deadline) {
-        if (tuh_cdc_read_available(dev) && tuh_cdc_read(dev, &c, 1) == 1)
-            return c;
-        tuh_task();
-    }
-    return -1;
-}
 
-
-/* ─── GET via ATGET + décodage HTTP ──────────────────────────────────────────
- * Émet `ATGET<url>\r`, alimente le parseur avec ce qui arrive du modem et range
- * le CORPS dans `buf` (au plus `cap` octets). Renvoie true si le statut est 2xx
+/* ─── Transaction HTTP via le modem (lecture ET écriture) ────────────────────
+ * Émet la commande AT, streame une charge binaire s'il y en a une (écriture),
+ * puis alimente le parseur avec la réponse et range le CORPS dans `buf` (au plus
+ * `cap` octets). Renvoie true si le statut est 2xx
  * et, quand `exact` est non nul, si exactement `exact` octets de corps ont été
  * reçus. `*outlen` reçoit la taille de corps réellement livrée (peut être NULL).
  *
  * Le corps est écrit au fil de l'eau : pas de tampon intermédiaire de la taille
  * de la piste. Au-delà de `cap` les octets sont consommés puis jetés, ce qui
- * garde le flux modem synchronisé pour l'appel suivant. */
-static bool web_get(uint8_t dev, const char *cmd, uint32_t cmd_len,
+ * garde le flux modem synchronisé pour l'appel suivant.
+ *
+ * C'est ICI que vit le seul client HTTP de la chaîne. Le modem transporte (il
+ * connecte, streame, relaie) et ne juge pas : `ATDISKWR` relaie la réponse comme
+ * `ATGET`, au lieu de rendre un OK/ERROR qui aurait exigé un second décodeur HTTP
+ * dans son firmware. */
+static bool web_xfer(uint8_t dev, const char *cmd, uint32_t cmd_len,
+                    const void *payload, uint32_t payload_len,
                     void *buf, uint32_t cap, uint32_t exact, uint32_t *outlen)
 {
     uint64_t deadline = time_us_64() + DSK_WEB_TIMEOUT_US;
 
     web_drain(dev);
     if (!web_write_all(dev, cmd, cmd_len, deadline))
+        return false;
+    /* Écriture : la charge BINAIRE suit la ligne de commande, telle quelle. Le
+     * modem la streame dans le corps du PUT sans l'interpréter. */
+    if (payload_len && !web_write_all(dev, (const char *)payload, payload_len, deadline))
         return false;
 
     nh_parser hp;
@@ -155,8 +154,11 @@ static bool web_get(uint8_t dev, const char *cmd, uint32_t cmd_len,
 
     if (hp.state == NH_ST_ERROR)
         return false;                       /* refus du modem, trame illisible */
-    if (hp.status != 200 && hp.status != 206)
-        return false;                       /* 404, 416, 5xx… : échec propre */
+    /* Tout 2xx vaut succès, pas seulement 200/206 : un `PUT` répond selon le
+     * serveur 200 (celui du webdisk, avec un corps JSON), 201 ou 204. Restreindre
+     * à 200/206 rejetait ces réponses légitimes. */
+    if (hp.status < 200 || hp.status >= 300)
+        return false;                       /* 403, 404, 416, 5xx… : échec propre */
     if (exact && got != exact)
         return false;                       /* tranche incomplète : ne pas servir */
     if (outlen)
@@ -178,7 +180,7 @@ bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf)
     if (n <= 0 || n >= (int)sizeof cmd)
         return false;
 
-    return web_get((uint8_t)dev, cmd, (uint32_t)n, buf, len, len, NULL);
+    return web_xfer((uint8_t)dev, cmd, (uint32_t)n, NULL, 0, buf, len, len, NULL);
 }
 
 /* ÉCRITURE : `ATDISKWR<url>?offset=&len=` puis les octets BRUTS, réponse `OK`/
@@ -203,35 +205,19 @@ bool dsk_web_write(const char *url, uint32_t offset, uint32_t len, const void *b
     if (dev < 0 || url == NULL || buf == NULL || len == 0)
         return false;
 
-    char cmd[192];
+    char cmd[224];
     int n = snprintf(cmd, sizeof cmd, "ATDISKWR%s?offset=%lu&len=%lu\r",
                      url, (unsigned long)offset, (unsigned long)len);
     if (n <= 0 || n >= (int)sizeof cmd)
         return false;
 
-    uint64_t deadline = time_us_64() + DSK_WEB_TIMEOUT_US;
-
-    web_drain((uint8_t)dev);
-    if (!web_write_all((uint8_t)dev, cmd, (uint32_t)n, deadline))
-        return false;
-    /* Corps : les len octets bruts (le modem les relaie en PUT). */
-    if (!web_write_all((uint8_t)dev, (const char *)buf, len, deadline))
-        return false;
-
-    /* Réponse du modem : OK (2xx) ou ERROR. Scan robuste des deux jetons. */
-    static const char tok_ok[] = "OK";
-    static const char tok_er[] = "ERROR";
-    int oi = 0, ei = 0, c;
-    while ((c = web_getc((uint8_t)dev, deadline)) >= 0) {
-        oi = (c == tok_ok[oi]) ? oi + 1 : (c == tok_ok[0] ? 1 : 0);
-        if (oi == (int)(sizeof tok_ok - 1))
-            return true;
-        ei = (c == tok_er[ei]) ? ei + 1 : (c == tok_er[0] ? 1 : 0);
-        if (ei == (int)(sizeof tok_er - 1))
-            return false;
-    }
-    return false;
+    /* La réponse du serveur est relayée brute par le modem : on la décode avec le
+     * MÊME parseur que la lecture, et le statut 2xx vaut succès. Le corps
+     * éventuel (message d'erreur du serveur) est consommé puis jeté — d'où un
+     * `cap` de 0 : seul le statut nous intéresse ici. */
+    return web_xfer((uint8_t)dev, cmd, (uint32_t)n, buf, len, NULL, 0, 0, NULL);
 }
+
 
 /* ─── Route B : base URL + GET généraliste (liste /disks) ─────────────────── */
 
@@ -258,5 +244,5 @@ bool dsk_web_fetch(const char *url, void *buf, uint32_t cap, uint32_t *outlen)
     /* Taille variable (liste JSON /disks) : pas de longueur exacte exigée. Le
      * corps peut arriver en `Transfer-Encoding: chunked`, que le parseur
      * dé-chunke — c'est le cas observé sur les serveurs derrière Cloudflare. */
-    return web_get((uint8_t)dev, cmd, (uint32_t)n, buf, cap, 0, outlen);
+    return web_xfer((uint8_t)dev, cmd, (uint32_t)n, NULL, 0, buf, cap, 0, outlen);
 }

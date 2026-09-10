@@ -43,11 +43,22 @@ piste en fait 6400. C'est un canal **ligne**, pas un canal d'octets. La concepti
 (dépôt `picowifi`, commit `4af36e7`) : `ATDISKWR<url>?offset=&len=` lit les octets **bruts** et
 les streame dans un `PUT`, en répondant `OK`/`ERROR`.
 
-**`dsk_web_write` est donc inchangé** — il émettait déjà exactement cette commande — mais il est
-enfin **exécutable et validé** : `emul/tests/test_dskweb.c` cas F/G, charge binaire transmise
-octet pour octet (`0x0D`, `0x0A`, `0x00` et un `.` inclus), `ERROR` non pris pour un succès.
-⚠️ Le dongle doit être **reflashé** pour en disposer ; sur un dongle antérieur, l'écriture échoue
-proprement.
+**`dsk_web_write` décode lui-même la réponse**, avec le **même parseur que la lecture**. Le
+modem relaie le HTTP brut et ne juge pas (`picowifi` `846b05b`) : mettre un client HTTP dans son
+firmware alors que LOCI en a déjà un — `net_http.c`, requis de toute façon pour `$B7` — aurait
+fait **deux décodeurs pour un seul besoin**. Le modem transporte, LOCI parle HTTP, dans les deux
+sens. `web_get()` devient donc `web_xfer()`, qui streame une charge binaire optionnelle avant de
+décoder la réponse ; le scan `OK`/`ERROR` et `web_getc()` disparaissent, devenus morts.
+
+**Corrigé au passage** : seuls les statuts 200 et 206 étaient acceptés. Or un `PUT` répond selon
+le serveur **200** (celui du webdisk, avec un corps JSON), **201** ou **204** — tous rejetés.
+**Tout 2xx** vaut désormais succès, ce qu'un test a mis au jour.
+
+**Validé en runtime** : `emul/tests/test_dskweb.c` **12/12** — commande exacte, charge binaire
+transmise octet pour octet (`0x0D`, `0x0A`, `0x00` et un `.` inclus), `204` sans corps accepté,
+**`200` + corps JSON de la vraie réponse du serveur** accepté, `403` refusé sans faux succès.
+⚠️ Le dongle doit être **reflashé** pour disposer de la commande ; sur un dongle antérieur,
+l'écriture échoue proprement.
 
 **Non testé de bout en bout** : le trajet dongle → serveur local. Le dongle « DIALLING » puis
 échoue à ouvrir un TCP vers la machine de développement, alors que celle-ci **ping** le dongle
