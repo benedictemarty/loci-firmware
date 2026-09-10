@@ -4,6 +4,43 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-10 — le device web `W:` devient atteignable : option `LOCI_WEBDISK_BASE`
+
+Le pseudo-périphérique **`W: Web disks`** existait dans le firmware depuis longtemps — liste
+racine (`api/dir.c:235`), `opendir("W:")` qui récupère `GET {base}/disks` et en décode le JSON
+(`api/dir.c:85-95`), `mount("W:jeu.dsk")` qui attache `{base}/disk/jeu.dsk` (`api/mnt.c:47-56`)
+— le tout conditionné à `dsk_web_base()`, c'est-à-dire au define `LOCI_WEBDISK_BASE`.
+
+**Mais aucune option du build ne permettait de définir cette macro** : le device restait
+invisible quoi qu'on fasse, et son code n'avait donc jamais pu tourner. D'où l'option :
+
+    cmake -DLOCI_WEBDISK_BASE=http://192.168.1.10:8080 …
+    -- LOCI: device web W: activé sur http://192.168.1.10:8080
+
+Vide (défaut) = device masqué, aucun accès réseau au démarrage.
+
+**Résultat, dans le menu LOCI et pour la première fois** (co-simulation + dongle physique +
+serveur `disk_server.py` réel) :
+
+    [0: Internal storage [15MB]        ^W:----------------[.dsk  ][x]
+    [2: CDC modem mounted              |/..
+    [W: Web disks                      | e2e.dsk
+                                       | sedoric3.dsk
+
+puis, après sélection, **`A: sedoric3.dsk` monté** avec « Microdisc on ». Le montage n'est pas
+cosmétique : `dsk_mount_web` lit l'en-tête du disque (20 octets) **par HTTP** avant d'accepter
+— le transport `ATGET` est donc exercé de bout en bout par le menu.
+
+Le protocole est **HTTP/1.1 + JSON**, pas du FTP ni un autoindex web : `GET /disks` pour la
+liste, `GET /disk/<nom>?offset=&len=6400` (réponse `206`) pour les pistes, `PUT` pour les
+écritures. `W:` attend donc l'API de `disk_server.py` ; c'est `N:` (`$B7`) qui accepte n'importe
+quelle URL.
+
+**Ce qui manque pour BOOTER** dessus : le menu affiche `!ROM` et son champ `rom:` est vide — LOCI
+sert la ROM Oric à la machine, et le FS interne ne contient que `locirom` et `test108k.rom`. Il
+faut y déposer une ROM Oric (`basic11b.rom`) pour que `ESC = boot` aboutisse. Contrainte de
+configuration, sans rapport avec le webdisk.
+
 ### 2026-09-10 — `$B7` : la lecture réseau ne survivait pas au rappel de `api_task` (trouvé par un vrai programme 6502)
 
 Le device `N:` rend la main **sans répondre** tant que rien n'est prêt (BUSY maintenu,

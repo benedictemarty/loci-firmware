@@ -81,6 +81,23 @@ else()
     pico_set_binary_type(loci-firmware copy_to_ram)
 endif()
 
+# URL racine du serveur de disques web, qui active le pseudo-périphérique « W: »
+# du menu : `opendir("W:")` y liste `{base}/disks` et monter `W:jeu.dsk` attache
+# `{base}/disk/jeu.dsk` comme lecteur (api/dir.c, api/mnt.c, oric/dsk_web.c).
+#
+# Le code attendait ce define depuis toujours (`#ifdef LOCI_WEBDISK_BASE`) mais
+# rien ne permettait de le passer : le device W: restait donc invisible, quoi
+# qu'on fasse. D'où cette option.
+#
+#   cmake -DLOCI_WEBDISK_BASE=http://192.168.1.10:8080 …
+#
+# Vide (défaut) = device W: masqué, aucun accès réseau au démarrage.
+if(LOCI_WEBDISK_BASE)
+    target_compile_definitions(loci-firmware PRIVATE
+        LOCI_WEBDISK_BASE="${LOCI_WEBDISK_BASE}")
+    message(STATUS "LOCI: device web W: activé sur ${LOCI_WEBDISK_BASE}")
+endif()
+
 target_include_directories(loci-firmware PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/tinyusb/src
