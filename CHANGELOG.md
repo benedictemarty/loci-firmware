@@ -36,10 +36,27 @@ liste, `GET /disk/<nom>?offset=&len=6400` (réponse `206`) pour les pistes, `PUT
 écritures. `W:` attend donc l'API de `disk_server.py` ; c'est `N:` (`$B7`) qui accepte n'importe
 quelle URL.
 
-**Ce qui manque pour BOOTER** dessus : le menu affiche `!ROM` et son champ `rom:` est vide — LOCI
-sert la ROM Oric à la machine, et le FS interne ne contient que `locirom` et `test108k.rom`. Il
-faut y déposer une ROM Oric (`basic11b.rom`) pour que `ESC = boot` aboutisse. Contrainte de
-configuration, sans rapport avec le webdisk.
+**Les ROMs Oric dans le FS interne** — `!ROM` disparaît en déposant les ROMs dans
+`src/roms/` avant compilation : le mécanisme `EMBEDDED_EXTRA_ROMS` (`sys/ext.c`,
+`create_resources` du CMakeLists) les écrit dans le littlefs au premier boot, et elles
+apparaissent dans `0:` (`basic10.rom`, `basic11b.rom`, `microdis.rom`). Le champ `rom:` du menu
+les propose alors — raccourci `o` pour y aller, filtre `.rom` appliqué automatiquement — et
+« Oric ROM » passe à `Custom`. (`src/roms` est dans le `.gitignore` : ces ROMs restent hors
+dépôt.)
+
+**⚠️ BOOTER sur le disque distant ne fonctionne pas encore, et je n'ai pas trouvé pourquoi.**
+Tout est en place — `A: sedoric3.dsk` monté, « Microdisc on », `rom: basic11b.rom` — mais
+`ESC = boot` ramène au **BASIC** au lieu de démarrer Sedoric. Pistes non vérifiées : la ROM
+Microdisc doit-elle être servie en overlay (elle est dans `0:` mais rien ne dit qu'elle est
+sélectionnée) ; la config du menu survit-elle au boot ; le format de `sedoric3.dsk`
+(1 024 256 o = 256 + 160×6400) convient-il au FDC émulé. À reprendre par quelqu'un qui connaît
+la manœuvre du menu.
+
+**Navigation du menu au clavier** (pour les tests headless, m'a coûté plusieurs essais) :
+`\d`/`\u` déplacent, **ESPACE** agit (pas RETURN), `\e` = boot, `?` remonte d'un niveau,
+`o` saute au champ ROM, `f` édite le filtre, `w` monte l'URL du champ path en A:. Le popup
+**mémorise le dernier chemin** : après une sélection dans `0:`, l'ouverture suivante y reste et
+le filtre peut ne rien trouver — d'où le `?` avant de changer de device.
 
 ### 2026-09-10 — `$B7` : la lecture réseau ne survivait pas au rappel de `api_task` (trouvé par un vrai programme 6502)
 
