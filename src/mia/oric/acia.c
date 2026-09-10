@@ -14,6 +14,7 @@
 #include "sys/ext.h"
 #include "sys/mem.h"
 #include "usb/cdc.h"
+#include "api/net.h"
 #include "oric/acia.h"
 
 #define ACIA_CMD_DTR 0b00000001
@@ -135,7 +136,7 @@ void acia_task(void){
         return;
     }
     if(acia_line_state_dtr != 0){
-        if(!acia_stat_tx){
+        if(!acia_stat_tx && !net_owns_modem()){
             if(tuh_cdc_write_available(acia_dev)){
                 if(tuh_cdc_write(acia_dev, (void*)&acia_tx_data, 1)){
                     tuh_cdc_write_flush(acia_dev);
@@ -154,7 +155,12 @@ void acia_task(void){
                 }
             }
         }
-        uint32_t acia_rx_available = tuh_cdc_read_available(acia_dev);
+        /* Device reseau `N:` ($B7) : le canal AT est UNIQUE. Tant qu'une
+         * transaction reseau detient le lien, on ne consomme pas ses octets —
+         * sinon les deux modes se voleraient le flux (spec $B7 §7 QO 2). Le
+         * passe-plat reprend des que la transaction est fermee. */
+        uint32_t acia_rx_available = net_owns_modem() ? 0
+                                  : tuh_cdc_read_available(acia_dev);
         if(acia_rx_available > 0){
             uint8_t len = acia_rx_buffer_tail - acia_rx_buffer_head - 2; //Only overlap when empty (keep 1 extra distance)
             len &= ACIA_RX_BUFFER_IDX_MASK; //Truncate len

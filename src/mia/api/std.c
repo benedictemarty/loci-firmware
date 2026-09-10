@@ -6,6 +6,7 @@
 
 #include "api/api.h"
 #include "api/std.h"
+#include "api/net.h"
 #include "sys/com.h"
 #include "sys/cpu.h"
 #include "sys/mia.h"
@@ -32,7 +33,11 @@ lfs_file_t lfs_fil[STD_LFS_MAX];
 #define STD_FIL_STDERR 2
 #define STD_FIL_OFFS 3
 #define STD_LFS_OFFS (STD_FIL_OFFS+STD_FIL_MAX)
-static_assert(STD_LFS_MAX + STD_LFS_OFFS < 128);
+/* Device reseau `N:` ($B7) : ses descripteurs suivent ceux du littlefs. Le canal
+ * AT du modem etant unique, il n'y en a qu'un (NET_FD_MAX). */
+#define STD_NET_OFFS (STD_LFS_OFFS+STD_LFS_MAX)
+#define STD_FD_END   (STD_NET_OFFS+NET_FD_MAX)
+static_assert(STD_FD_END < 128);
 
 static int32_t std_xram_count = -1;
 static int32_t std_in_count = -1;
@@ -81,6 +86,12 @@ void std_api_open(void)
     uint16_t mode = flags & RDWR; // RDWR are same bits
     uint8_t *path = &xstack[xstack_ptr];
     api_zxstack();
+    if (net_is_path(path)) {            /* device reseau N: -> backend $B7 */
+        int e = net_open(path, flags);
+        if (e)
+            return api_return_errno(e);
+        return api_return_ax(STD_NET_OFFS);
+    }
     if(path[0]=='0' && path[1]==':'){   //Internal flash at 0:
         path = &path[2];
         if (flags & CREAT)
@@ -143,8 +154,12 @@ void std_api_open(void)
 void std_api_close(void)
 {
     int fd = API_A;
-    if (fd < STD_FIL_OFFS || fd >= STD_LFS_MAX + STD_LFS_OFFS)
+    if (fd < STD_FIL_OFFS || fd >= STD_FD_END)
         return api_return_errno(API_EINVAL);
+    if (fd >= STD_NET_OFFS){
+        net_close();
+        return api_return_ax(0);
+    }
     if (fd >= STD_LFS_OFFS){
         lfs_file_t *fp = &lfs_fil[fd-STD_LFS_OFFS];
         lfs_free_file_config(fp);
@@ -252,8 +267,26 @@ void std_api_read_xram(void)
     if (!api_pop_uint16(&count) ||
         !api_pop_uint16_end(&xram_addr) ||
         (fd && fd < STD_FIL_OFFS) ||
-        fd >= STD_LFS_MAX + STD_LFS_OFFS)
+        fd >= STD_FD_END)
         return api_return_errno(API_EINVAL);
+    if (fd >= STD_NET_OFFS) {
+        /* Device reseau : machine a etats. Tant que rien n'est pret, on RETOURNE
+         * SANS repondre (BUSY reste pose) et le 6502 rappelle au tour suivant —
+         * patron socle §5.3. net_task() remplit l'anneau pendant ce temps. */
+        buf = &xram[xram_addr];
+        if (count > 0x7FFF)
+            count = 0x7FFF;
+        if (buf + count > xram + 0x10000)
+            return api_return_errno(API_EINVAL);
+        int32_t n = net_read(buf, count);
+        if (n == -1)
+            return;                     /* rien de pret : ne pas repondre */
+        if (n == -2)
+            return api_return_errno(net_errno());
+        api_set_ax((uint16_t)n);
+        std_xram_count = n;             /* la boucle ci-dessus finit le travail */
+        return;
+    }
     if (!fd)
     {
         cpu_stdin_request();

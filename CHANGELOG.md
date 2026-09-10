@@ -4,6 +4,60 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-10 — device réseau `N:` (opcode `$B7`) : lot 1 « GET », validé en runtime
+Donne à l'Oric un accès réseau **sous forme de fichier** : le 6502 fait
+`open("N:https://host/path")` puis `read_xram`/`close`, et LOCI pilote le modem AT
+(PicoWiFiModemUSB) pour son compte. Spec : `extensions/net-device-B7/spec-net-device.md`.
+
+**Nouveaux fichiers** : `mia/api/net.{c,h}` (device, machine à états, arbitrage du lien
+modem) et `mia/api/net_http.{c,h}` (décodage de la réponse `ATGET`).
+
+**Pourquoi un décodeur HTTP dans LOCI** — le contraire de ce que la spec supposait. Mesure
+du 2026-09-10 sur le dongle réel (v0.3.3) : il **termine le TLS mais ne parse pas le HTTP**.
+Il relaie `CONNECT 9600`, la **status line et les en-têtes bruts**, le corps — souvent en
+**`Transfer-Encoding: chunked`** —, puis `NO CARRIER`. Livrer ce flux tel quel au 6502 lui
+donnerait des en-têtes et des tailles de blocs hexadécimales au milieu de ses données. D'où
+`net_http.c` : status line, saut des en-têtes, **dé-chunkage**, `Content-Length`, et
+distinction entre **erreur de transport** (le modem refuse avant tout HTTP → `errno`) et
+**statut HTTP** (un 404 remonte tel quel, à l'appli de décider).
+
+**Modèle = flux, pas bufferisation.** Un corps peut peser plus que la RAM (une image
+disque) : `net_task()` remplit un anneau de 2 Ko que `read_xram` vide. Anneau plein ⇒ on ne
+consomme pas le lien, la contre-pression se fait naturellement dans le buffer USB.
+
+**`read_xram` sur un fd réseau** suit le patron socle §5.3 : tant que rien n'est prêt, la
+fonction **retourne sans répondre** (BUSY reste posé) et le 6502 rappelle au tour suivant.
+Deux temporisations distinctes, parce que le **premier octet d'une réponse HTTPS tarde de
+plusieurs secondes** (handshake TLS) : 20 s pour le premier octet, 6 s entre octets.
+
+**Arbitrage avec le passe-plat ACIA `$0380`** (terminaux type OricTel) : le canal AT est
+**unique**. Tant qu'une transaction `N:` est ouverte, `net_owns_modem()` est vrai et
+`acia_task()` ne consomme **ni** ne pousse d'octets vers le modem — sinon les deux modes se
+voleraient le flux. Les deux restent mutuellement exclusifs sans qu'aucun connaisse l'autre
+(spec §7 QO 2, tranchée ainsi). `net_stop()` libère le lien à l'arrêt du noyau.
+
+**Descripteurs** : `STD_NET_OFFS` suit ceux du littlefs, un seul fd (canal AT unique,
+spec §7 QO 1). `open` route sur le préfixe `N:` (insensible à la casse) avant le test `0:`.
+
+**VALIDÉ EN RUNTIME**, pas seulement compilé : `emul/tests/test_net.c` (**12/12**) exécute ce
+code dans l'émulateur RP2040 avec un modem mock — commande AT réellement émise
+(`ATGET<url>\r` exact), corps dé-chunké livré au 6502 sans en-têtes, `-1` « rien de prêt »
+distinct de l'EOF, EOF franc, corps **binaire** intact (`0x00`/`0x0D`/`0x1A`), verrou
+`net_owns_modem()` posé puis relâché, réouverture après `close`, et refus du modem remonté en
+erreur de transport sans faux succès. Suite complète de l'émulateur : **14 suites vertes**.
+
+**Hors périmètre de ce lot** (spec §4.2) : `ATPOST`/écriture, `tcp://`/`telnet://`, `prefix`,
+`json_query`, `time`, multi-connexions. `net_control` n'expose que `status` (code HTTP, état,
+octets disponibles), poussé **sur le xstack** et non dans un registre à effet de bord — un
+`LDA reg,X` indexé provoquerait un double accès (socle §5.9).
+
+**⚠️ Constat annexe, non corrigé** : `mia/oric/dsk_web.c` (webdisk archi B) émet `ATDISKRD`,
+commande que le dongle **ne reconnaît pas** — vérifié le 2026-09-10 sur v0.3.3 (interprétée
+comme `ATD` + « ISKRDhttp:0 » → `NO CARRIER`) et **absente des sources du dongle**
+(`~/picowifi`). Le webdisk archi B ne peut donc pas fonctionner en l'état : soit la commande
+est ajoutée au dongle, soit `dsk_web.c` bascule sur `ATGET` + `net_http.c` (désormais
+disponible). À trancher.
+
 ### 2026-09-09 — CAUSE RACINE du boot HW en build XIP + correctif candidat (masquage IRQ des ops flash)
 Diagnostic via le co-sim `~/loci/emul` de **pourquoi la stratégie C (FLASH/XIP) bootait en émulateur mais
 mourait avant `led_init` sur silicium** (cf. entrée 2026-09-08).

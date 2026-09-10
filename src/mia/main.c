@@ -13,6 +13,7 @@
 #include "api/oem.h"
 #include "api/rng.h"
 #include "api/std.h"
+#include "api/net.h"
 //#include "aud/aud.h"
 #include "mon/fil.h"
 #include "mon/mon.h"
@@ -113,6 +114,7 @@ void main_task(void)
     pwr_task();
     adj_task();
     acia_task();
+    net_task();
     ula_task();
 }
 
@@ -153,6 +155,7 @@ static void stop(void)
     mia_stop();
     pix_stop();
     std_stop();
+    net_stop();   /* libere le lien modem : le passe-plat ACIA reprend */
     kbd_stop();
     mou_stop();
     pad_stop();
@@ -323,6 +326,9 @@ bool main_api(uint8_t operation)
         break;
     case 0xA8:
         std_api_stream_bank();
+        break;
+    case 0xB7:
+        net_api_control();
         break;
     default:
         return false;

@@ -131,6 +131,8 @@ target_sources(loci-firmware PRIVATE
     mia/api/oem.c
     mia/api/rng.c
     mia/api/std.c
+    mia/api/net.c
+    mia/api/net_http.c
  #   mia/aud/aud.c
     mia/mon/fil.c
     mia/mon/hlp.c
