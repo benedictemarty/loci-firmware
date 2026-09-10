@@ -73,6 +73,17 @@ void std_task(void)
         putchar(STD_OUT_BUF(++std_out_tail));
 }
 
+/* Lecture réseau en cours : le device `N:` rend la main SANS répondre tant que
+ * rien n'est prêt (BUSY maintenu), et `api_task` rappelle alors `main_api` avec le
+ * MÊME opcode. Les paramètres ayant déjà été dépilés au premier passage, il faut
+ * les mémoriser : sans ça le second passage redépile un xstack vide et rend
+ * EINVAL. Constaté depuis un vrai programme 6502 (`open` réussi, `read` en
+ * EINVAL alors que la transaction était bien en réception) — le chemin C direct
+ * des tests ne passait pas par `api_task` et ne pouvait pas le montrer. */
+static bool     net_rd_active;
+static uint16_t net_rd_addr;
+static uint16_t net_rd_count;
+
 void std_api_open(void)
 {
     // These match CC65 which is closer to POSIX than FatFs.
@@ -157,6 +168,7 @@ void std_api_close(void)
     if (fd < STD_FIL_OFFS || fd >= STD_FD_END)
         return api_return_errno(API_EINVAL);
     if (fd >= STD_NET_OFFS){
+        net_rd_active = false;      /* annule une lecture restee en attente */
         net_close();
         return api_return_ax(0);
     }
@@ -239,6 +251,17 @@ void std_api_read_xstack(void)
 void std_api_read_xram(void)
 {
     static uint16_t xram_addr;
+    if (net_rd_active) {
+        int32_t n = net_read((uint8_t *)&xram[net_rd_addr], net_rd_count);
+        if (n == -1)
+            return;                     /* toujours rien : BUSY reste posé */
+        net_rd_active = false;
+        if (n == -2)
+            return api_return_errno(net_errno());
+        api_set_ax((uint16_t)n);
+        std_xram_count = n;
+        return;
+    }
     if (std_in_count >= 0)
     {
         if (!cpu_stdin_ready())
@@ -272,15 +295,21 @@ void std_api_read_xram(void)
     if (fd >= STD_NET_OFFS) {
         /* Device reseau : machine a etats. Tant que rien n'est pret, on RETOURNE
          * SANS repondre (BUSY reste pose) et le 6502 rappelle au tour suivant —
-         * patron socle §5.3. net_task() remplit l'anneau pendant ce temps. */
+         * patron socle §5.3. net_task() remplit l'anneau pendant ce temps.
+         * Les parametres sont MEMORISES ici : au rappel, le xstack est vide et il
+         * ne faut surtout pas le redepiler (cf. net_rd_active en tete). */
         buf = &xram[xram_addr];
         if (count > 0x7FFF)
             count = 0x7FFF;
         if (buf + count > xram + 0x10000)
             return api_return_errno(API_EINVAL);
         int32_t n = net_read(buf, count);
-        if (n == -1)
+        if (n == -1) {
+            net_rd_active = true;
+            net_rd_addr = xram_addr;
+            net_rd_count = count;
             return;                     /* rien de pret : ne pas repondre */
+        }
         if (n == -2)
             return api_return_errno(net_errno());
         api_set_ax((uint16_t)n);

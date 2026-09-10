@@ -4,6 +4,38 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-10 — `$B7` : la lecture réseau ne survivait pas au rappel de `api_task` (trouvé par un vrai programme 6502)
+
+Le device `N:` rend la main **sans répondre** tant que rien n'est prêt (BUSY maintenu,
+patron socle §5.3) ; `api_task` rappelle alors `main_api` avec le **même opcode**. Mais les
+paramètres avaient déjà été dépilés au premier passage : le second redépilait un **xstack
+vide** et rendait `EINVAL`. Toute lecture réseau qui n'était pas servie du premier coup —
+c'est-à-dire toute lecture réelle, le réseau n'étant jamais instantané — échouait donc.
+
+**Correctif** : les paramètres sont mémorisés (`net_rd_active`, `net_rd_addr`,
+`net_rd_count`) et l'état de reprise est testé **avant** tout dépilage, exactement comme
+`std_api_read_xram` le fait pour stdin. `close` annule une lecture restée en attente.
+
+**Pourquoi les tests ne l'avaient pas vu** : `emul/tests/test_net.c` appelle `net_read` en C
+direct, sans passer par `api_task` — il ne pouvait structurellement pas rencontrer le rappel.
+Il a fallu un **vrai programme 6502** (`extensions/net-device-B7/tests/oric/nettest.c`,
+façade cc65, cible atmos) pour le déclencher : `open` réussissait (`fd=21`) puis `read`
+rendait `EINVAL` alors que `$B7 status` montrait la transaction bien en réception
+(`state=2`).
+
+**Validé de bout en bout** (Oric → façade cc65 → API MIA → firmware réel → USB CDC → dongle
+→ WiFi → serveur webdisk) :
+
+    open OK, fd=21
+    lu 32 octets (attendu 32)
+    http=206 state=3 avail=0
+    OK : tranche identique, statut 206
+
+« tranche identique » = 32 octets comparés **un par un** à leur référence, `FF` et `00`
+compris. Et `http=206 state=3 avail=0` valide au passage l'**ordre de dépilage** de
+`$B7 status` entre le firmware et la façade cc65 — un décalage aurait mis 206 dans `avail`.
+C'est le point que la note H de `test_net.c` laissait explicitement découvert.
+
 ### 2026-09-10 — webdisk : la lecture bascule d'`ATDISKRD` (inexistante) vers `ATGET`
 `oric/dsk_web.c` émettait `ATDISKRD`, commande AT propriétaire supposée ajoutée au firmware du
 modem. **Elle n'existe pas** : vérifié le 2026-09-10 sur le dongle réel (v0.3.3), où
