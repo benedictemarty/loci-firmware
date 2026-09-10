@@ -34,11 +34,15 @@ modem. **Elle n'existe pas** : vérifié le 2026-09-10 sur le dongle réel (v0.3
 rendue octet pour octet, tranche courte et statut 404 refusés, `fetch` dé-chunké. Suite
 complète de l'émulateur : **15 suites vertes**.
 
-**⚠️ L'ÉCRITURE RESTE NON FONCTIONNELLE** et n'a pas été basculée à moitié, pour ne pas faire
-croire à un chemin opérationnel : `ATDISKWR` n'existe pas plus qu'`ATDISKRD`. La faire marcher
-demanderait `ATPOST` **et** un ajout côté serveur webdisk, qui n'accepte l'écriture de tranche
-qu'en `PUT` (`do_POST` ne couvre que `/disks` et `/drive/<n>`). Le disque web est donc en
-**lecture seule** tant que ce point n'est pas tranché.
+**⚠️ L'ÉCRITURE RESTE NON FONCTIONNELLE — et elle ne PEUT PAS être basculée comme la lecture.**
+`ATDISKWR` n'existe pas plus qu'`ATDISKRD`, et `ATPOST` — la seule alternative — a été **mesuré
+inadapté au binaire** le 2026-09-10 contre `httpbin.org/post` : il **supprime les `0x0D`**
+(6 octets `00 0D 0A 1A FF 41` arrivent en 5, `00 0A 1A FF 41`), **casse** (`ERROR`) sur un corps
+contenant `\r\n.\r\n` qui est son terminateur, et **refuse dès ~3000 octets** quand une piste en
+fait 6400. C'est un canal **ligne**, pas un canal d'octets ; base64 réglerait la corruption mais
+pas la taille (8534 o encodés par piste → cinq requêtes). Écrire une piste exige donc une
+**commande AT binaire côté dongle**, ce qui était l'intention d'`ATDISKWR`. Le disque web est en
+**lecture seule** jusque-là, et la fonction échoue proprement plutôt que d'être basculée à moitié.
 
 **Non testé de bout en bout** : le trajet dongle → serveur local. Le dongle « DIALLING » puis
 échoue à ouvrir un TCP vers la machine de développement, alors que celle-ci **ping** le dongle

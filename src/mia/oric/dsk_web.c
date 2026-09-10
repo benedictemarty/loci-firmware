@@ -181,14 +181,24 @@ bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf)
     return web_get((uint8_t)dev, cmd, (uint32_t)n, buf, len, len, NULL);
 }
 
-/* ⚠️ ÉCRITURE NON FONCTIONNELLE — inchangée par la bascule de la lecture.
- * `ATDISKWR` n'existe pas plus que `ATDISKRD` dans le dongle (même vérification
- * du 2026-09-10). Pour la faire marcher il faudrait `ATPOST`, mais le serveur
- * webdisk n'accepte l'écriture de tranche qu'en **PUT** (`do_POST` ne couvre que
- * `/disks` et `/drive/<n>`) : il faudrait donc AUSSI y ajouter `POST /disk/<nom>`
- * comme alias. Laissée en l'état, et non pas basculée à moitié, pour ne pas faire
- * croire à un chemin d'écriture opérationnel. Le disque web est donc en LECTURE
- * SEULE tant que ce point n'est pas tranché. */
+/* ⚠️ ÉCRITURE NON FONCTIONNELLE — et elle ne peut PAS être basculée comme la
+ * lecture. `ATDISKWR` n'existe pas plus que `ATDISKRD` dans le dongle (même
+ * vérification du 2026-09-10), et `ATPOST` — la seule alternative — a été mesuré
+ * inadapté aux données binaires (spec `$B7` §1.2) :
+ *
+ *   - il SUPPRIME les `0x0D` : 6 octets `00 0D 0A 1A FF 41` arrivent en 5,
+ *     `00 0A 1A FF 41` (vérifié contre httpbin.org/post) ;
+ *   - un corps contenant `\r\n.\r\n` déclenche `ERROR` : c'est son terminateur ;
+ *   - il refuse dès ~3000 octets, alors qu'une piste en fait 6400.
+ *
+ * C'est un canal LIGNE, pas un canal d'octets ; un encodage base64 réglerait la
+ * corruption mais pas la taille (8534 o encodés par piste, cinq requêtes). Écrire
+ * une piste exige donc une COMMANDE AT BINAIRE côté dongle — ce qui était
+ * l'intention d'`ATDISKWR`. Le disque web reste en LECTURE SEULE jusque-là.
+ *
+ * La fonction est laissée en l'état plutôt que basculée à moitié, pour ne pas
+ * faire croire à un chemin d'écriture opérationnel : elle échoue proprement
+ * (le modem répond ERROR à `ATDISKWR`), et `dsk.c` remonte l'échec. */
 bool dsk_web_write(const char *url, uint32_t offset, uint32_t len, const void *buf)
 {
     int dev = dsk_web_modem_dev();
