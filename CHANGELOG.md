@@ -34,15 +34,20 @@ modem. **Elle n'existe pas** : vérifié le 2026-09-10 sur le dongle réel (v0.3
 rendue octet pour octet, tranche courte et statut 404 refusés, `fetch` dé-chunké. Suite
 complète de l'émulateur : **15 suites vertes**.
 
-**⚠️ L'ÉCRITURE RESTE NON FONCTIONNELLE — et elle ne PEUT PAS être basculée comme la lecture.**
-`ATDISKWR` n'existe pas plus qu'`ATDISKRD`, et `ATPOST` — la seule alternative — a été **mesuré
-inadapté au binaire** le 2026-09-10 contre `httpbin.org/post` : il **supprime les `0x0D`**
-(6 octets `00 0D 0A 1A FF 41` arrivent en 5, `00 0A 1A FF 41`), **casse** (`ERROR`) sur un corps
-contenant `\r\n.\r\n` qui est son terminateur, et **refuse dès ~3000 octets** quand une piste en
-fait 6400. C'est un canal **ligne**, pas un canal d'octets ; base64 réglerait la corruption mais
-pas la taille (8534 o encodés par piste → cinq requêtes). Écrire une piste exige donc une
-**commande AT binaire côté dongle**, ce qui était l'intention d'`ATDISKWR`. Le disque web est en
-**lecture seule** jusque-là, et la fonction échoue proprement plutôt que d'être basculée à moitié.
+**L'ÉCRITURE redevient possible — par une commande ajoutée au dongle, pas par un contournement.**
+`ATPOST` a été **mesuré inadapté au binaire** le 2026-09-10 contre `httpbin.org/post` : il
+**supprime les `0x0D`** (6 octets `00 0D 0A 1A FF 41` arrivent en 5), **casse** (`ERROR`) sur un
+corps contenant `\r\n.\r\n` qui est son terminateur, et **refuse dès ~3000 octets** quand une
+piste en fait 6400. C'est un canal **ligne**, pas un canal d'octets. La conception d'origine
+était donc juste : il faut une **commande AT binaire**. Elle a été **implémentée côté dongle**
+(dépôt `picowifi`, commit `4af36e7`) : `ATDISKWR<url>?offset=&len=` lit les octets **bruts** et
+les streame dans un `PUT`, en répondant `OK`/`ERROR`.
+
+**`dsk_web_write` est donc inchangé** — il émettait déjà exactement cette commande — mais il est
+enfin **exécutable et validé** : `emul/tests/test_dskweb.c` cas F/G, charge binaire transmise
+octet pour octet (`0x0D`, `0x0A`, `0x00` et un `.` inclus), `ERROR` non pris pour un succès.
+⚠️ Le dongle doit être **reflashé** pour en disposer ; sur un dongle antérieur, l'écriture échoue
+proprement.
 
 **Non testé de bout en bout** : le trajet dongle → serveur local. Le dongle « DIALLING » puis
 échoue à ouvrir un TCP vers la machine de développement, alors que celle-ci **ping** le dongle

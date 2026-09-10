@@ -181,24 +181,22 @@ bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf)
     return web_get((uint8_t)dev, cmd, (uint32_t)n, buf, len, len, NULL);
 }
 
-/* ⚠️ ÉCRITURE NON FONCTIONNELLE — et elle ne peut PAS être basculée comme la
- * lecture. `ATDISKWR` n'existe pas plus que `ATDISKRD` dans le dongle (même
- * vérification du 2026-09-10), et `ATPOST` — la seule alternative — a été mesuré
- * inadapté aux données binaires (spec `$B7` §1.2) :
+/* ÉCRITURE : `ATDISKWR<url>?offset=&len=` puis les octets BRUTS, réponse `OK`/
+ * `ERROR`. Ce code est inchangé, mais son support a changé : la commande
+ * n'existait pas côté dongle (d'où l'échec « DIALLING SKRDhttp:0 » de sa sœur
+ * `ATDISKRD`) et **elle y a été ajoutée le 2026-09-10** (dépôt `picowifi`,
+ * commit `4af36e7`) — précisément parce qu'`ATPOST`, la seule alternative, est un
+ * canal LIGNE inadapté au binaire : il supprime les `0x0D` (mesuré : 6 octets
+ * `00 0D 0A 1A FF 41` arrivent en 5), casse sur un corps contenant `\r\n.\r\n`
+ * qui est son terminateur, et refuse dès ~3000 octets quand une piste en fait
+ * 6400.
  *
- *   - il SUPPRIME les `0x0D` : 6 octets `00 0D 0A 1A FF 41` arrivent en 5,
- *     `00 0A 1A FF 41` (vérifié contre httpbin.org/post) ;
- *   - un corps contenant `\r\n.\r\n` déclenche `ERROR` : c'est son terminateur ;
- *   - il refuse dès ~3000 octets, alors qu'une piste en fait 6400.
+ * ⚠️ Le dongle doit être **reflashé** pour disposer de la commande ; sur un dongle
+ * antérieur, cette fonction échoue proprement (le modem répond `ERROR`).
  *
- * C'est un canal LIGNE, pas un canal d'octets ; un encodage base64 réglerait la
- * corruption mais pas la taille (8534 o encodés par piste, cinq requêtes). Écrire
- * une piste exige donc une COMMANDE AT BINAIRE côté dongle — ce qui était
- * l'intention d'`ATDISKWR`. Le disque web reste en LECTURE SEULE jusque-là.
- *
- * La fonction est laissée en l'état plutôt que basculée à moitié, pour ne pas
- * faire croire à un chemin d'écriture opérationnel : elle échoue proprement
- * (le modem répond ERROR à `ATDISKWR`), et `dsk.c` remonte l'échec. */
+ * Validé en runtime avec un modem mock (`emul/tests/test_dskweb.c`, cas F/G) :
+ * commande exacte, charge binaire transmise octet pour octet (`0x0D`, `0x0A`,
+ * `0x00` et un `.` inclus), et `ERROR` non pris pour un succès. */
 bool dsk_web_write(const char *url, uint32_t offset, uint32_t len, const void *buf)
 {
     int dev = dsk_web_modem_dev();
