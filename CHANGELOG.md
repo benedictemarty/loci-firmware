@@ -44,13 +44,30 @@ les propose alors — raccourci `o` pour y aller, filtre `.rom` appliqué automa
 « Oric ROM » passe à `Custom`. (`src/roms` est dans le `.gitignore` : ces ROMs restent hors
 dépôt.)
 
-**⚠️ BOOTER sur le disque distant ne fonctionne pas encore, et je n'ai pas trouvé pourquoi.**
-Tout est en place — `A: sedoric3.dsk` monté, « Microdisc on », `rom: basic11b.rom` — mais
-`ESC = boot` ramène au **BASIC** au lieu de démarrer Sedoric. Pistes non vérifiées : la ROM
-Microdisc doit-elle être servie en overlay (elle est dans `0:` mais rien ne dit qu'elle est
-sélectionnée) ; la config du menu survit-elle au boot ; le format de `sedoric3.dsk`
-(1 024 256 o = 256 + 160×6400) convient-il au FDC émulé. À reprendre par quelqu'un qui connaît
-la manœuvre du menu.
+**BOOTER sur le disque distant est IMPOSSIBLE EN CO-SIMULATION — limite du banc, pas du
+firmware.** Diagnostic établi par le journal du firmware :
+
+    dsk web tr:80/1{MNT ok W:/sedoric3.dsk}DEV ROM loaded ok
+    Fast boot ON
+
+Le montage réussit, la géométrie est détectée, la ROM Microdisc est chargée — puis **plus
+rien** : ni `BIOS loaded ok`, ni `!rom_load 11 failed`. La machine à états de boot
+(`MIA_LOADING_DEVROM` → `MIA_LOADING_BIOS` → chargement du BASIC → pose de `nROMDIS`,
+`sys/mia.c:405`) **ne progresse jamais**.
+
+La raison est dans le co-sim, pas ici : `loci_emu_tick()` n'est **jamais appelée**
+(`~/Oric1/src/main.c:1307` explique pourquoi — la faire tourner entre deux transactions
+désynchronise le service de bus et figeait le menu). Le firmware n'avance donc **qu'en sync
+avec les transactions bus** : dès que le 6502 cesse d'accéder à `$03xx`, core0 gèle. Or le boot
+exige exactement le contraire — que core0 progresse **seul** pendant que le 6502 est en reset.
+
+`nROMDIS` reste donc à 0, LOCI reste transparent, et l'Oric démarre sur sa **propre** ROM (écran
+BASIC 1.1). `!ROM` est le retour de `mia_api_boot` que le menu affiche quand le boot ne prend
+pas la main (`rom/src/main.c:413-439`).
+
+Le **montage**, lui, est synchrone — déclenché par un accès 6502 — d'où sa réussite. À valider
+sur matériel réel, où core0 tourne en continu. Vaut pour tout ce qui dépendra d'une progression
+autonome du firmware.
 
 **Navigation du menu au clavier** (pour les tests headless, m'a coûté plusieurs essais) :
 `\d`/`\u` déplacent, **ESPACE** agit (pas RETURN), `\e` = boot, `?` remonte d'un niveau,
