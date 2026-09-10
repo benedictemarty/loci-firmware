@@ -4,6 +4,47 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-10 — webdisk : la lecture bascule d'`ATDISKRD` (inexistante) vers `ATGET`
+`oric/dsk_web.c` émettait `ATDISKRD`, commande AT propriétaire supposée ajoutée au firmware du
+modem. **Elle n'existe pas** : vérifié le 2026-09-10 sur le dongle réel (v0.3.3), où
+`ATDISKRD…` est interprété comme `ATD` + « ISKRDhttp:0 » (« DIALLING SKRDhttp:0 » puis
+`NO CARRIER`), et **absente des sources du dongle** (`~/picowifi`). Ce transport était donc
+**inopérant depuis le début** — ce qui explique qu'il n'ait jamais pu être validé en runtime.
+
+**Bascule de la LECTURE sur `ATGET`**, sans rien toucher au dongle :
+- `dsk_web_read` émet `ATGET<url>?offset=<o>&len=<n>` — la **query** et non un en-tête `Range`,
+  qu'`ATGET` ne peut pas porter. C'est possible parce que le serveur webdisk accepte déjà cette
+  forme (documentée « pratique pour un client minimal qui ne gère pas l'en-tête `Range` ») et
+  répond `206 Partial Content` + `Content-Length` exact ;
+- `dsk_web_fetch` (liste JSON, taille variable) émet `ATGET<url>` et accepte un corps
+  **chunked** ;
+- le décodage est fait par `api/net_http.c` (statut, saut des en-têtes, dé-chunkage,
+  `Content-Length`), déjà présent pour le device `N:` ;
+- nouveau `web_get()` interne, commun aux deux, qui écrit le corps **au fil de l'eau** (pas de
+  tampon intermédiaire de la taille d'une piste) et rejette : statut non-2xx, trame illisible,
+  et **tranche plus courte que demandée** — servir une piste incomplète au FDC lui ferait lire
+  les octets d'une piste précédente ;
+- timeout porté de 8 s à **20 s** : en HTTPS le premier octet n'arrive qu'après le handshake
+  TLS, mesuré à plusieurs secondes ;
+- le décodeur `+DISK:` (`web_recv_header`) est supprimé, devenu mort.
+
+**Bénéfice** : le disque web gagne **HTTPS**, le dongle terminant le TLS.
+
+**VALIDÉ EN RUNTIME** (`emul/tests/test_dskweb.c`, **7/7**) : commande émise exacte, tranche
+rendue octet pour octet, tranche courte et statut 404 refusés, `fetch` dé-chunké. Suite
+complète de l'émulateur : **15 suites vertes**.
+
+**⚠️ L'ÉCRITURE RESTE NON FONCTIONNELLE** et n'a pas été basculée à moitié, pour ne pas faire
+croire à un chemin opérationnel : `ATDISKWR` n'existe pas plus qu'`ATDISKRD`. La faire marcher
+demanderait `ATPOST` **et** un ajout côté serveur webdisk, qui n'accepte l'écriture de tranche
+qu'en `PUT` (`do_POST` ne couvre que `/disks` et `/drive/<n>`). Le disque web est donc en
+**lecture seule** tant que ce point n'est pas tranché.
+
+**Non testé de bout en bout** : le trajet dongle → serveur local. Le dongle « DIALLING » puis
+échoue à ouvrir un TCP vers la machine de développement, alors que celle-ci **ping** le dongle
+et que le serveur écoute sur `0.0.0.0` — blocage des connexions **entrantes** (pare-feu local
+ou isolation AP). Cette limite prévalait déjà pour `ATDISKRD`.
+
 ### 2026-09-10 — device réseau `N:` (opcode `$B7`) : lot 1 « GET », validé en runtime
 Donne à l'Oric un accès réseau **sous forme de fichier** : le 6502 fait
 `open("N:https://host/path")` puis `read_xram`/`close`, et LOCI pilote le modem AT

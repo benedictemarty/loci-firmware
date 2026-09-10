@@ -7,13 +7,30 @@
 /*
  * Web-backed disk transport — voir dsk_web.h.
  *
- * Émet ATDISKRD<url>?offset=&len= au modem PicoWiFi (hôte USB-CDC) et décode la
- * trame  \r\n+DISK:<len>\r\n <len octets>  . La pile USB hôte est pompée
- * (tuh_task) pendant l'attente ; tout est borné par un timeout.
+ * LECTURE : `ATGET<url>?offset=&len=` + décodage HTTP par `api/net_http.c`.
+ *
+ * Ce fichier émettait `ATDISKRD`, une commande AT propriétaire supposée ajoutée
+ * au firmware du modem. Vérification du 2026-09-10 sur le dongle réel (v0.3.3) :
+ * **elle n'existe pas** — `ATDISKRD…` est interprété comme `ATD` + « ISKRDhttp:0 »
+ * (« DIALLING SKRDhttp:0 » puis `NO CARRIER`) — et elle est **absente des sources
+ * du dongle**. Ce transport était donc inopérant.
+ *
+ * La bascule sur `ATGET` est possible sans toucher au dongle parce que le serveur
+ * webdisk accepte déjà `?offset=<o>&len=<n>` en query (documenté comme « pratique
+ * pour un client minimal qui ne gère pas l'en-tête Range ») : aucun en-tête à
+ * envoyer, ce qu'`ATGET` ne permettrait pas. Il répond `206 Partial Content` +
+ * `Content-Length` exact. Le dongle relaie le HTTP brut sans le parser, d'où
+ * `net_http.c` (dé-chunkage, Content-Length, statut) — validé par 31 tests natifs
+ * dont la réponse réelle de ce serveur. Bénéfice au passage : HTTPS marche, le
+ * dongle terminant le TLS.
+ *
+ * La pile USB hôte est pompée (tuh_task) pendant l'attente ; tout est borné par
+ * un timeout. Le modèle reste BLOQUANT (le 6502 attend sa piste de toute façon).
  */
 
 #include "oric/dsk_web.h"
 #include "usb/cdc.h"
+#include "api/net_http.h"
 #include "tusb.h"
 #include "pico/time.h"
 #include <stdio.h>
@@ -23,8 +40,10 @@
 #define CFG_TUH_CDC 4
 #endif
 
-/* Timeout global d'une requête (lecture d'une piste de 6400 o sur lien série). */
-#define DSK_WEB_TIMEOUT_US (8ull * 1000 * 1000)
+/* Timeout global d'une requête (lecture d'une piste de 6400 o sur lien série).
+ * Élargi par rapport aux 8 s d'origine : en HTTPS le premier octet n'arrive
+ * qu'après le handshake TLS, mesuré à plusieurs secondes (spec $B7 §1.1). */
+#define DSK_WEB_TIMEOUT_US (20ull * 1000 * 1000)
 
 /* Trouve l'interface CDC du modem, ou -1. */
 static int dsk_web_modem_dev(void)
@@ -81,37 +100,67 @@ static int web_getc(uint8_t dev, uint64_t deadline)
     return -1;
 }
 
-/* Attend "+DISK:<len>\r\n" (robuste à l'écho) et renvoie <len> dans *rlen.
- * Partagé par dsk_web_read (taille exacte) et dsk_web_fetch (taille variable). */
-static bool web_recv_header(uint8_t dev, uint64_t deadline, uint32_t *rlen)
+
+/* ─── GET via ATGET + décodage HTTP ──────────────────────────────────────────
+ * Émet `ATGET<url>\r`, alimente le parseur avec ce qui arrive du modem et range
+ * le CORPS dans `buf` (au plus `cap` octets). Renvoie true si le statut est 2xx
+ * et, quand `exact` est non nul, si exactement `exact` octets de corps ont été
+ * reçus. `*outlen` reçoit la taille de corps réellement livrée (peut être NULL).
+ *
+ * Le corps est écrit au fil de l'eau : pas de tampon intermédiaire de la taille
+ * de la piste. Au-delà de `cap` les octets sont consommés puis jetés, ce qui
+ * garde le flux modem synchronisé pour l'appel suivant. */
+static bool web_get(uint8_t dev, const char *cmd, uint32_t cmd_len,
+                    void *buf, uint32_t cap, uint32_t exact, uint32_t *outlen)
 {
-    static const char marker[] = "+DISK:";
-    int mi = 0, c;
-    while (mi < (int)(sizeof marker - 1)) {
-        c = web_getc(dev, deadline);
-        if (c < 0)
+    uint64_t deadline = time_us_64() + DSK_WEB_TIMEOUT_US;
+
+    web_drain(dev);
+    if (!web_write_all(dev, cmd, cmd_len, deadline))
+        return false;
+
+    nh_parser hp;
+    nh_init(&hp);
+
+    uint8_t *out = (uint8_t *)buf;
+    uint32_t got = 0;
+
+    while (!nh_done(&hp) && hp.state != NH_ST_ERROR) {
+        if (time_us_64() > deadline)
             return false;
-        mi = (c == marker[mi]) ? mi + 1 : (c == marker[0]);
-    }
-    uint32_t v = 0;
-    bool any = false;
-    for (;;) {
-        c = web_getc(dev, deadline);
-        if (c < 0)
-            return false;
-        if (c >= '0' && c <= '9') {
-            v = v * 10 + (uint32_t)(c - '0');
-            any = true;
-        } else if (c == '\r') {
-            break;
-        } else if (any) {
-            return false;
+
+        uint8_t in[64];
+        uint32_t avail = tuh_cdc_read_available(dev);
+        if (!avail) {
+            tuh_task();
+            continue;
+        }
+        uint32_t want = (avail > sizeof in) ? (uint32_t)sizeof in : avail;
+        uint32_t n = tuh_cdc_read(dev, in, want);
+        if (!n)
+            continue;
+
+        uint32_t off = 0;
+        while (off < n) {
+            uint8_t body[64];
+            nh_result r = nh_feed(&hp, in + off, n - off, body, sizeof body);
+            for (uint32_t i = 0; i < r.produced; i++, got++)
+                if (got < cap)
+                    out[got] = body[i];
+            off += r.consumed;
+            if (r.consumed == 0 && r.produced == 0)
+                break;
         }
     }
-    web_getc(dev, deadline); /* consommer le LF */
-    if (!any)
-        return false;
-    *rlen = v;
+
+    if (hp.state == NH_ST_ERROR)
+        return false;                       /* refus du modem, trame illisible */
+    if (hp.status != 200 && hp.status != 206)
+        return false;                       /* 404, 416, 5xx… : échec propre */
+    if (exact && got != exact)
+        return false;                       /* tranche incomplète : ne pas servir */
+    if (outlen)
+        *outlen = (got < cap) ? got : cap;
     return true;
 }
 
@@ -121,41 +170,25 @@ bool dsk_web_read(const char *url, uint32_t offset, uint32_t len, void *buf)
     if (dev < 0 || url == NULL || buf == NULL || len == 0)
         return false;
 
-    char cmd[192];
-    int n = snprintf(cmd, sizeof cmd, "ATDISKRD%s?offset=%lu&len=%lu\r",
+    /* `?offset=&len=` plutôt qu'un en-tête `Range:` — ATGET n'envoie pas d'en-tête,
+     * et le serveur webdisk accepte cette forme (réponse 206 + Content-Length). */
+    char cmd[224];
+    int n = snprintf(cmd, sizeof cmd, "ATGET%s?offset=%lu&len=%lu\r",
                      url, (unsigned long)offset, (unsigned long)len);
     if (n <= 0 || n >= (int)sizeof cmd)
         return false;
 
-    uint64_t deadline = time_us_64() + DSK_WEB_TIMEOUT_US;
-
-    web_drain((uint8_t)dev);
-    if (!web_write_all((uint8_t)dev, cmd, (uint32_t)n, deadline))
-        return false;
-
-    uint32_t rlen = 0;
-    if (!web_recv_header((uint8_t)dev, deadline, &rlen) || rlen != len)
-        return false; /* autre taille annoncée → échec propre */
-
-    /* Lire exactement len octets de corps dans buf. */
-    uint8_t *out = (uint8_t *)buf;
-    uint32_t got = 0;
-    while (got < len) {
-        if (time_us_64() > deadline)
-            return false;
-        uint32_t avail = tuh_cdc_read_available((uint8_t)dev);
-        if (avail) {
-            uint32_t want = len - got;
-            if (want > avail)
-                want = avail;
-            got += tuh_cdc_read((uint8_t)dev, out + got, want);
-        } else {
-            tuh_task();
-        }
-    }
-    return got == len;
+    return web_get((uint8_t)dev, cmd, (uint32_t)n, buf, len, len, NULL);
 }
 
+/* ⚠️ ÉCRITURE NON FONCTIONNELLE — inchangée par la bascule de la lecture.
+ * `ATDISKWR` n'existe pas plus que `ATDISKRD` dans le dongle (même vérification
+ * du 2026-09-10). Pour la faire marcher il faudrait `ATPOST`, mais le serveur
+ * webdisk n'accepte l'écriture de tranche qu'en **PUT** (`do_POST` ne couvre que
+ * `/disks` et `/drive/<n>`) : il faudrait donc AUSSI y ajouter `POST /disk/<nom>`
+ * comme alias. Laissée en l'état, et non pas basculée à moitié, pour ne pas faire
+ * croire à un chemin d'écriture opérationnel. Le disque web est donc en LECTURE
+ * SEULE tant que ce point n'est pas tranché. */
 bool dsk_web_write(const char *url, uint32_t offset, uint32_t len, const void *buf)
 {
     int dev = dsk_web_modem_dev();
@@ -209,34 +242,13 @@ bool dsk_web_fetch(const char *url, void *buf, uint32_t cap, uint32_t *outlen)
     if (dev < 0 || url == NULL || buf == NULL || cap == 0 || outlen == NULL)
         return false;
 
-    char cmd[192];
-    int n = snprintf(cmd, sizeof cmd, "ATDISKRD%s\r", url);
+    char cmd[224];
+    int n = snprintf(cmd, sizeof cmd, "ATGET%s\r", url);
     if (n <= 0 || n >= (int)sizeof cmd)
         return false;
 
-    uint64_t deadline = time_us_64() + DSK_WEB_TIMEOUT_US;
-    web_drain((uint8_t)dev);
-    if (!web_write_all((uint8_t)dev, cmd, (uint32_t)n, deadline))
-        return false;
-
-    uint32_t rlen = 0;
-    if (!web_recv_header((uint8_t)dev, deadline, &rlen))
-        return false;
-
-    /* Lire les rlen octets (taille variable) ; n'en conserver que cap, jeter le
-     * reste (garde le flux modem synchronisé pour l'appel suivant). */
-    uint8_t *out = (uint8_t *)buf;
-    uint32_t got = 0;
-    while (got < rlen) {
-        if (time_us_64() > deadline)
-            return false;
-        int c = web_getc((uint8_t)dev, deadline);
-        if (c < 0)
-            return false;
-        if (got < cap)
-            out[got] = (uint8_t)c;
-        got++;
-    }
-    *outlen = (rlen < cap) ? rlen : cap;
-    return true;
+    /* Taille variable (liste JSON /disks) : pas de longueur exacte exigée. Le
+     * corps peut arriver en `Transfer-Encoding: chunked`, que le parseur
+     * dé-chunke — c'est le cas observé sur les serveurs derrière Cloudflare. */
+    return web_get((uint8_t)dev, cmd, (uint32_t)n, buf, cap, 0, outlen);
 }
