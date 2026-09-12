@@ -4,6 +4,17 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/basic-ext-AB` : extension BASIC `!` (prototype `$AB`, `!VER`)
+
+`api/bext.c` : quand la cassette passe par LOCI et que la ROM servie est BASIC 1.1b, le vecteur
+RAM du `!` (`$02F5`, handler `$CD13 = JMP ($02F5)` — crochet officiel des DOS) est posé au
+démarrage à froid sur un trampoline 6502 logé dans la zone morte `$E66E-$E6C8` (corps de
+« écrire un octet cassette », court-circuité par `mia_write_byte_patch`). Retouche unique de code
+ROM : `STA $02F5 / STY $02F6` de `$ECF3` → `JSR install ; NOP ×3`. `!VER` → primitive 0 de `$AB`
+(chaîne poussée sur la xstack, affichée par `$F77C`) ; mot inconnu → `JMP $D336` (comportement
+d'origine). Validé en co-simulation (`!VER` → `LOCI FW 0.3.1`, `!FOO` → erreur d'origine, CALL
+et cassette intacts). Source du trampoline : `extensions/basic-ext-AB/src/tramp11.s`.
+
 ### 2026-09-13 — branche `feature/fs-posix` : `$1E SYNCFS`, `$1F STAT`, `$84 CHDIR`, `$85 GETFREE` ; `xstack_ptr` initialisé
 
 Complément POSIX (spec `extensions/fs-posix`, strictement additif) : quatre handlers minces
