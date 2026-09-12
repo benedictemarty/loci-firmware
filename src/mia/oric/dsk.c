@@ -730,9 +730,9 @@ void dsk_act(uint8_t raw_cmd){
                 break;
             case STEP_OUT:
                 if(dsk_active.track > 0){
-                    act_next_track = dsk_active.track + 1;
+                    act_next_track = dsk_active.track - 1;
                 }
-                dsk_active.step_dir_out = false;
+                dsk_active.step_dir_out = true;
                 break;
             default:
                 //fail
