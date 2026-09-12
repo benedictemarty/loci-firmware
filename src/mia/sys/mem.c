@@ -34,7 +34,7 @@ uint8_t *const xram = (uint8_t *)&xram_blocks;
 #endif
 */
 uint8_t xstack[XSTACK_SIZE + 1];
-size_t volatile xstack_ptr;
+size_t volatile xstack_ptr = XSTACK_SIZE;   // pile VIDE au démarrage (voir api_zxstack)
 
 //uint8_t mbuf[MBUF_SIZE] __attribute__((aligned(4)));
 size_t mbuf_len;
