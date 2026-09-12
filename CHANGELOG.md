@@ -4,6 +4,15 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-12 — `dsk_act()` aligné sur le correctif STEP_OUT ; état des correctifs `upstream-fixes` sur cette branche
+
+`dsk_cmd()` (chemin réel : FIFO → `dsk_task`) porte déjà le correctif STEP_OUT (piste−1,
+direction « out ») ; `dsk_act()`, appel commenté dans `mia.c`, gardait l'ancien bug — aligné.
+Vérifié par `~/loci/emul` `test_dsk` 3b (STEP_IN ×2, STEP_OUT, STEP à direction mémorisée,
+lecture exacte ensuite). Inventaire : les patchs `extensions/upstream-fixes` 0001-0005 sont tous
+présents sur cette branche ; 0006 (délai d'écriture FDC par octet) est sur
+`fix/dsk-write-interbyte-timeout`, 0007 (mode ACIA persistant) concerne la base amont 17.
+
 ### 2026-09-12 — RECTIFICATIF : booter sur un disque EST possible en co-simulation
 
 L'entrée du 10/09 ci-dessous (« BOOTER sur le disque distant est IMPOSSIBLE EN CO-SIMULATION »)
