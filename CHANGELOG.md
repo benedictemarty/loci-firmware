@@ -4,6 +4,35 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-12 — RECTIFICATIF : booter sur un disque EST possible en co-simulation
+
+L'entrée du 10/09 ci-dessous (« BOOTER sur le disque distant est IMPOSSIBLE EN CO-SIMULATION »)
+diagnostiquait le gel de la machine à états de boot après `Fast boot ON`. Le diagnostic
+« core0 ne progresse qu'en sync avec les transactions bus » était incomplet : en boot rapide
+le 6502 **poll `$03B1`** (`BVC *` posé par `api_return_boot`) et chaque poll fait avancer le
+firmware — le chargement des ROMs aboutit bien. Les vrais manques étaient dans le banc :
+1. la fenêtre **Microdisc `$0310-$0318` n'était pas co-simulée** (servie par le modèle interne
+   de Phosphoric, qui ne voyait pas le `.dsk` monté par le firmware) ;
+2. la **carte haute** servie par LOCI était figée sur `oric_bank3` : `microdis.rom` (chargée
+   par `rom_load_raw("microdis.rom", 0xA000)` = `oric_bank2 + $2000`) n'était jamais servie
+   sur `$E000-$FFFF`, ni la RAM overlay sous `$C000-$DFFF` (MAP).
+
+Les deux sont corrigés côté `~/loci/emul` (`c788d3a`) et `~/Oric1` (`da0ae2b`) : **`SEDORIC
+V3.0` boote depuis `1:/SEDORIC3.DSK` monté sur `A:` dans le vrai menu, menu autorun identique
+à la référence**. Aucun changement firmware. Reste à rejouer le scénario `W:` (disque web) —
+même chemin `dsk.c`, seul le backend `WEB` diffère ; non refait faute de serveur lancé.
+
+Deux comportements firmware **observés** au passage (pas de correctif, à évaluer sur
+silicium) :
+- `DSK_WRITE` n'attend l'octet suivant que `dsk_rw_countdown = 2 × data_len` passes de
+  `dsk_task` (`oric/dsk.c`) ; en lecture c'est `200 ×`. Si une passe de la boucle noyau est
+  rapide devant l'intervalle entre deux `STA $0313` du 6502, un secteur écrit est tronqué
+  (les octets suivants tombent dans le registre DATA inerte, sans erreur). Le banc a dû geler
+  core0 pendant la transaction pour l'éviter.
+- `INTRQ` est **rejoué en impulsion à chaque passe** tant que `dsk_reg_irq == 0x00` (fin de
+  `dsk_task`) : sur un 6502 câblé en niveau c'est neutre, mais tout consommateur en front
+  (banc, analyseur) voit une rafale.
+
 ### 2026-09-10 — le device web `W:` devient atteignable : option `LOCI_WEBDISK_BASE`
 
 Le pseudo-périphérique **`W: Web disks`** existait dans le firmware depuis longtemps — liste
