@@ -304,10 +304,11 @@ void dir_api_chdir(void)
     return api_return_ax(0);
 }
 
-/* $85 GETFREE — chemin de volume sur la xstack (« 0: », « 1: »…). Rend
- * AXSREG = unités LIBRES et pousse, dans l'ordre de dépilement côté 6502 :
- * csize (2 o, secteurs de 512 o par unité), total (4 o, unités du volume).
- * FAT : unité = cluster ; littlefs : unité = bloc de 4 Ko (csize = 8). */
+/* $85 GETFREE — chemin de volume sur la xstack (« 0: », « 1: »…). Même forme que
+ * le wrapper amont rp6502 f_getfree (free puis total dépilés en unsigned long),
+ * plus l'information manquante pour convertir en octets : AX = csize (secteurs de
+ * 512 o par unité, > 0 = succès ; -1 = errno). Unité : cluster (FAT) ou bloc de
+ * 4 Ko (littlefs, csize = 8). Ko libres = free × csize / 2. */
 void dir_api_getfree(void)
 {
     uint8_t *path = &xstack[xstack_ptr];
@@ -330,7 +331,7 @@ void dir_api_getfree(void)
         csize = (uint16_t)fs->csize;
     }
     api_push_uint32(&total);
-    api_push_uint16(&csize);
+    api_push_uint32(&nfree);
     api_sync_xstack();
-    return api_return_axsreg(nfree);
+    return api_return_ax(csize);
 }

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include <string.h>
 #include "api/api.h"
 #include "api/std.h"
 #include "api/net.h"
@@ -673,14 +674,19 @@ void std_api_syncfs(void)
     return api_return_ax(0);
 }
 
-/* $1F STAT — chemin sur la xstack. Rend AXSREG = taille (32 bits) et pousse,
- * dans l'ordre de dépilement côté 6502 : fattrib (1 o, bits FatFS AM_*),
- * fdate (2 o), ftime (2 o). littlefs (0:) : fattrib = AM_DIR ou 0, date/heure = 0. */
+/* $1F STAT — chemin sur la xstack. Même opcode et même ABI que RP6502 (RIA_OP_STAT,
+ * cc65 libsrc/rp6502/f_stat.c) : AX = 0 / -1 (errno) et la structure f_stat_t est
+ * poussée pour se DÉPILER dans l'ordre des champs :
+ *   fsize (4) fdate (2) ftime (2) crdate (2) crtime (2) fattrib (1) altname[13] fname[256]
+ * = 282 octets (xstack 512). LOCI : crdate/crtime = 0 (FF_FS_CRTIME absent) ;
+ * littlefs (0:) : fattrib = AM_DIR ou 0, dates 0, altname vide, fname = nom. */
 void std_api_stat(void)
 {
     uint8_t *path = &xstack[xstack_ptr];
     api_zxstack();
-    uint8_t fattrib; uint16_t fdate, ftime; uint32_t fsize;
+    uint32_t fsize; uint16_t fdate, ftime, zero16 = 0; uint8_t fattrib;
+    char altname[13] = {0};
+    char fname[256] = {0};
     if (path[0] == '0' && path[1] == ':') {
         struct lfs_info info;
         int lfsresult = lfs_stat(&lfs_volume, (const char *)&path[2], &info);
@@ -688,16 +694,25 @@ void std_api_stat(void)
             return api_return_errno(API_ELFSFS(lfsresult));
         fattrib = (info.type == LFS_TYPE_DIR) ? AM_DIR : 0;
         fdate = 0; ftime = 0; fsize = info.size;
+        strncpy(fname, info.name, sizeof fname - 1);
     } else {
         FILINFO fno;
         FRESULT fresult = f_stat((TCHAR *)path, &fno);
         if (fresult != FR_OK)
             return api_return_errno(API_EFATFS(fresult));
         fattrib = fno.fattrib; fdate = fno.fdate; ftime = fno.ftime; fsize = (uint32_t)fno.fsize;
+        strncpy(altname, fno.altname, sizeof altname - 1);
+        strncpy(fname, fno.fname, sizeof fname - 1);
     }
+    /* Poussé à l'envers : le dernier poussé est le premier dépilé (fsize, octet bas). */
+    api_push_n(fname, sizeof fname);
+    api_push_n(altname, sizeof altname);
+    api_push_uint8(&fattrib);
+    api_push_uint16(&zero16);      /* crtime */
+    api_push_uint16(&zero16);      /* crdate */
     api_push_uint16(&ftime);
     api_push_uint16(&fdate);
-    api_push_uint8(&fattrib);
+    api_push_uint32(&fsize);
     api_sync_xstack();
-    return api_return_axsreg(fsize);
+    return api_return_ax(0);
 }
