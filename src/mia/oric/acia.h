@@ -38,6 +38,7 @@ void acia_task(void);
 void acia_stop();
 
 bool acia_xreg(uint16_t word);
+void acia_apply_cfg(void);   //re-apply the persisted mode after cfg_init()
 
 void __not_in_flash() acia_reset(bool hw_reset);
 void __not_in_flash() acia_clr_irq(void);

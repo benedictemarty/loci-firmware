@@ -117,7 +117,8 @@ bool acia_set_iopage_addr(uint8_t addr){
     return true;
 }
 
-bool acia_xreg(uint16_t word){
+//Apply an ACIA mapping mode without persisting it (boot path)
+static bool acia_set_mode(uint16_t word){
     switch(word){
         //Mode 0 - Disabled
         case(0):
@@ -136,6 +137,12 @@ bool acia_xreg(uint16_t word){
         default:
             return false;
     }
+    return true;
+}
+
+bool acia_xreg(uint16_t word){
+    if(!acia_set_mode(word))
+        return false;
     cfg_set_acia(word); //Make persistent 
     return true;
 }
@@ -143,9 +150,15 @@ bool acia_xreg(uint16_t word){
 /* Kernel events
  */
 
+void acia_apply_cfg(void){
+    acia_set_mode(cfg_get_acia());
+}
+
 void acia_init(void){
-    //Persistent 
-    acia_xreg(cfg_get_acia());  //Load persistent mode
+    //Persistent mode: apply only. Saving here would hit littlefs before it is
+    //mounted (acia_init runs before lfs_init) and rewrite CONFIG.SYS at every
+    //boot. The persisted value is applied by cfg_init() once the config is read.
+    acia_set_mode(cfg_get_acia());
     acia_reset(true);
     acia_dev = -1;
     acia_rx_buffer_head = 0;

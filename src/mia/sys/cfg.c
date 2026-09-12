@@ -11,6 +11,7 @@
 #include "sys/cpu.h"
 #include "sys/lfs.h"
 #include "sys/mem.h"
+#include "oric/acia.h"
 //#include "sys/vga.h"
 
 // Configuration is a plain ASCII file on the LFS. e.g.
@@ -196,6 +197,7 @@ static void cfg_load_with_boot_opt(bool boot_only)
 void cfg_init(void)
 {
     cfg_load_with_boot_opt(false);
+    acia_apply_cfg();   //acia_init() ran before the config was readable
 }
 
 void cfg_set_boot(char *str)
@@ -405,6 +407,7 @@ bool cfg_set_acia(uint8_t mode){
         ok = true;
         cfg_save_with_boot_opt(NULL);
     }
+    return ok;
 }
 
 uint8_t cfg_get_acia(void){
