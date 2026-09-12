@@ -19,8 +19,10 @@ firmware — le chargement des ROMs aboutit bien. Les vrais manques étaient dan
 
 Les deux sont corrigés côté `~/loci/emul` (`c788d3a`) et `~/Oric1` (`da0ae2b`) : **`SEDORIC
 V3.0` boote depuis `1:/SEDORIC3.DSK` monté sur `A:` dans le vrai menu, menu autorun identique
-à la référence**. Aucun changement firmware. Reste à rejouer le scénario `W:` (disque web) —
-même chemin `dsk.c`, seul le backend `WEB` diffère ; non refait faute de serveur lancé.
+à la référence**. Aucun changement firmware. **Scénario `W:` rejoué le même jour** (build
+`build-xip-web/`, `-DLOCI_WEBDISK_BASE=http://127.0.0.1:8090`, `disk_server.py --writable`,
+modem factice `emul/tools/mock_modem.py` sur PTY) : Sedoric boote depuis le disque web et
+`SAVE"COSIM"` écrit 6 `PUT` (`dsk_flush_track` → `ATDISKWR`), `DIR` liste le fichier.
 
 Deux comportements firmware **observés** au passage (pas de correctif, à évaluer sur
 silicium) :
