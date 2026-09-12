@@ -7,6 +7,7 @@
 
 #include "main.h"
 #include "api/api.h"
+#include "api/bext.h"
 #include "mon/rom.h"
 #include "sys/com.h"
 #include "sys/cpu.h"
@@ -455,6 +456,7 @@ void mia_task(void)
                         for(uint16_t i=0; i<sizeof(mia_write_byte_patch); i++){
                             xram[WRITE_BYTE_PATCH_11_ADDR+i] = mia_write_byte_patch[i];
                         }
+                        bext_install_11();   //`!` -> trampoline dans la zone morte de write_byte (prototype $AB)
                         if(!!(mia_boot_settings & MIA_BOOTSET_TAP_ALD)){
                             for(uint16_t i=0; i<sizeof(mia_autoload_setup_patch_11); i++){
                                 xram[AUTOLOAD_SETUP_PATCH_11_ADDR+i] = mia_autoload_setup_patch_11[i];

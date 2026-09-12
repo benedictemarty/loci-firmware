@@ -13,6 +13,7 @@
 #include "api/oem.h"
 #include "api/rng.h"
 #include "api/std.h"
+#include "api/bext.h"
 #include "api/net.h"
 //#include "aud/aud.h"
 #include "mon/fil.h"
@@ -338,6 +339,9 @@ bool main_api(uint8_t operation)
         break;
     case 0xA8:
         std_api_stream_bank();
+        break;
+    case 0xAB:                       /* extension BASIC `!` (prototype) */
+        bext_api_prim();
         break;
     case 0xB7:
         net_api_control();

@@ -142,6 +142,7 @@ target_sources(loci-firmware PRIVATE
     mia/main.c
     mia/str.c
     mia/api/api.c
+    mia/api/bext.c
     mia/api/clk.c
     mia/api/dir.c
     mia/api/mnt.c
