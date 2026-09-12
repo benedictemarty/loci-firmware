@@ -29,8 +29,14 @@ Base : branche `feature/acia-rx-lossless`, créée par-dessus le hotfix 17
 #### Notes
 - Staging RX **inchangé et mono-cœur** (cœur 0) : `acia_read()` (cœur 1) ne fait
   que libérer le slot. Aucune écriture concurrente du slot/ring entre cœurs.
-- **Compilé et lié** (`ninja` → `loci-firmware.elf`). ⚠️ **Non validé en
-  runtime** : validation Phosphoric (`--loci`) puis matériel restant à faire.
+- **Compilé et lié** (`ninja` → `loci-firmware.elf`). Avec gcc 14, `Release`
+  déborde la RAM de 8 Ko : compiler en `-DCMAKE_BUILD_TYPE=MinSizeRel` (98,9 %).
+- **2026-09-12 — validé en runtime dans l'émulateur RP2040** (`~/loci/emul`,
+  `LOCI_ELF=<ce build> ./test_acia`, section G) : octet stagé non acquitté →
+  rappels nIRQ périodiques ; **après lecture du STATUS, plus aucun rappel** et
+  l'octet reste lisible — là où l'amont continue de rappeler (2 rappels / 600
+  passes). `test_cdc`, `test_lfs`, `test_dsk`, `test_tap`, `test_hid` verts sur
+  ce build. ⚠️ Reste le **matériel** (dongle + programme 6502 piloté par IRQ).
 - Réf : forum defence-force t=2926 (réponses Sodium 31/08–01/09/2026) ;
   branche de référence `origin/feature/acia` (`acia_stat_checked`).
 
