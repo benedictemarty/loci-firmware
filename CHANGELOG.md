@@ -4,6 +4,23 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/fs-posix` : `$1E SYNCFS`, `$1F STAT`, `$84 CHDIR`, `$85 GETFREE` ; `xstack_ptr` initialisé
+
+Complément POSIX (spec `extensions/fs-posix`, strictement additif) : quatre handlers minces
+(`std.c`, `dir.c`) + quatre `case` dans `main_api`. **STAT et SYNCFS ont le même opcode et la
+même ABI que RP6502** (`f_stat_t` 282 octets dépilée champ par champ ; `syncfs(fd)`, `$FF` =
+tous) ; GETFREE dépile `free`, `total` comme `f_getfree` amont et rend `csize` en AX ; CHDIR
+fait aussi `f_chdrive` (sinon les chemins relatifs restaient sur l'ancien volume) et n'accepte
+que la racine sur littlefs. Validé par le bus (`emul` `test_fsposix`, 21 suites) et par un
+**vrai programme 6502** (`extensions/fs-posix/tests/oric/fstest`, façade `loci_fs` de
+`loci.lib`) : `FSTEST OK`.
+
+**Correctif trouvé en chemin — `xstack_ptr` non initialisé** (`sys/mem.c`) : il partait de 0
+et n'était posé à `XSTACK_SIZE` que par `api_zxstack()` (boot par LOCI ou opcode 0). Un
+programme lancé sans passer par LOCI (Oric transparent, cassette) perdait ses premiers
+arguments — le push de `$03AC` est gardé par `if (xstack_ptr)` — et `open` recevait un chemin
+vide (`FR_NOT_ENABLED`). Patch `extensions/upstream-fixes` 0008.
+
 ### 2026-09-12 — `dsk_act()` aligné sur le correctif STEP_OUT ; état des correctifs `upstream-fixes` sur cette branche
 
 `dsk_cmd()` (chemin réel : FIFO → `dsk_task`) porte déjà le correctif STEP_OUT (piste−1,
