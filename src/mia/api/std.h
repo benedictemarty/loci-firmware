@@ -31,5 +31,7 @@ void std_api_lseek(void);
 void std_api_stream_bank(void);
 void std_api_unlink(void);
 void std_api_rename(void);
+void std_api_syncfs(void);   /* $1E */
+void std_api_stat(void);     /* $1F */
 
 #endif /* _STD_H_ */

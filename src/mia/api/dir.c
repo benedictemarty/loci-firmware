@@ -277,3 +277,60 @@ void dir_api_mkdir(void){
     }
     return api_return_ax(0);
 }
+
+/* ── Complément POSIX (extensions/fs-posix, additif) ───────────────────── */
+
+/* $84 CHDIR — chemin sur la xstack. FAT : f_chdir (FF_FS_RPATH=2). littlefs
+ * n'a pas de répertoire courant : seul « 0: » (racine) est accepté. */
+void dir_api_chdir(void)
+{
+    uint8_t *path = &xstack[xstack_ptr];
+    api_zxstack();
+    if (path[0] == '0' && path[1] == ':') {
+        const uint8_t *p = &path[2];
+        while (*p == '/') p++;
+        if (*p)
+            return api_return_errno(API_ENOSYS);   /* pas de cwd sur littlefs */
+        return api_return_ax(0);
+    }
+    FRESULT fresult = f_chdir((TCHAR *)path);
+    if (fresult != FR_OK)
+        return api_return_errno(API_EFATFS(fresult));
+    /* Sémantique POSIX : « 1:/SUB » rend aussi le volume 1 courant, sinon les
+     * chemins relatifs qui suivent resteraient sur le volume courant précédent
+     * (FatFS sépare cwd par volume et volume courant). */
+    if (path[1] == ':' && (fresult = f_chdrive((TCHAR *)path)) != FR_OK)
+        return api_return_errno(API_EFATFS(fresult));
+    return api_return_ax(0);
+}
+
+/* $85 GETFREE — chemin de volume sur la xstack (« 0: », « 1: »…). Rend
+ * AXSREG = unités LIBRES et pousse, dans l'ordre de dépilement côté 6502 :
+ * csize (2 o, secteurs de 512 o par unité), total (4 o, unités du volume).
+ * FAT : unité = cluster ; littlefs : unité = bloc de 4 Ko (csize = 8). */
+void dir_api_getfree(void)
+{
+    uint8_t *path = &xstack[xstack_ptr];
+    api_zxstack();
+    uint32_t nfree, total; uint16_t csize;
+    if (path[0] == '0' && path[1] == ':') {
+        lfs_ssize_t used = lfs_fs_size(&lfs_volume);
+        if (used < 0)
+            return api_return_errno(API_ELFSFS(used));
+        total = lfs_volume.cfg->block_count;
+        nfree = total - (uint32_t)used;
+        csize = (uint16_t)(lfs_volume.cfg->block_size / 512);
+    } else {
+        FATFS *fs; DWORD nclst;
+        FRESULT fresult = f_getfree((TCHAR *)path, &nclst, &fs);
+        if (fresult != FR_OK)
+            return api_return_errno(API_EFATFS(fresult));
+        nfree = nclst;
+        total = (uint32_t)(fs->n_fatent - 2);
+        csize = (uint16_t)fs->csize;
+    }
+    api_push_uint32(&total);
+    api_push_uint16(&csize);
+    api_sync_xstack();
+    return api_return_axsreg(nfree);
+}

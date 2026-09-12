@@ -22,5 +22,7 @@ void dir_api_opendir(void);
 void dir_api_closedir(void);
 void dir_api_readdir(void);
 void dir_api_mkdir(void);
+void dir_api_chdir(void);    /* $84 */
+void dir_api_getfree(void);  /* $85 */
 
 #endif /* _DIR_H_ */

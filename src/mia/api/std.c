@@ -627,3 +627,77 @@ void std_stop(void)
             lfs_file_close(&lfs_volume, &lfs_fil[i]);
         }
 }
+
+/* ── Complément POSIX (extensions/fs-posix, additif) ─────────────────────
+ * Greffe de primitives FatFS/littlefs déjà liées, jamais exposées à l'API.
+ * Opcodes : $1E SYNCFS, $1F STAT (ici) ; $84 CHDIR, $85 GETFREE (dir.c). */
+
+/* $1E SYNCFS — A = fd (ou $FF = tous les fichiers ouverts). Rend 0 / errno. */
+void std_api_syncfs(void)
+{
+    int fd = API_A;
+    if (fd == 0xFF) {
+        for (int i = 0; i < STD_FIL_MAX; i++)
+            if (std_fil[i].obj.fs) {
+                FRESULT fresult = f_sync(&std_fil[i]);
+                if (fresult != FR_OK)
+                    return api_return_errno(API_EFATFS(fresult));
+            }
+        for (int i = 0; i < STD_LFS_MAX; i++)
+            if (lfs_isopen[i]) {
+                int lfsresult = lfs_file_sync(&lfs_volume, &lfs_fil[i]);
+                if (lfsresult < 0)
+                    return api_return_errno(API_ELFSFS(lfsresult));
+            }
+        return api_return_ax(0);
+    }
+    if (fd < STD_FIL_OFFS || fd >= STD_FD_END)
+        return api_return_errno(API_EINVAL);
+    if (fd >= STD_NET_OFFS)
+        return api_return_ax(0);            /* réseau : rien à synchroniser */
+    if (fd >= STD_LFS_OFFS) {
+        fd -= STD_LFS_OFFS;
+        if (!lfs_isopen[fd])
+            return api_return_errno(API_EINVAL);
+        int lfsresult = lfs_file_sync(&lfs_volume, &lfs_fil[fd]);
+        if (lfsresult < 0)
+            return api_return_errno(API_ELFSFS(lfsresult));
+        return api_return_ax(0);
+    }
+    fd -= STD_FIL_OFFS;
+    if (!std_fil[fd].obj.fs)
+        return api_return_errno(API_EINVAL);
+    FRESULT fresult = f_sync(&std_fil[fd]);
+    if (fresult != FR_OK)
+        return api_return_errno(API_EFATFS(fresult));
+    return api_return_ax(0);
+}
+
+/* $1F STAT — chemin sur la xstack. Rend AXSREG = taille (32 bits) et pousse,
+ * dans l'ordre de dépilement côté 6502 : fattrib (1 o, bits FatFS AM_*),
+ * fdate (2 o), ftime (2 o). littlefs (0:) : fattrib = AM_DIR ou 0, date/heure = 0. */
+void std_api_stat(void)
+{
+    uint8_t *path = &xstack[xstack_ptr];
+    api_zxstack();
+    uint8_t fattrib; uint16_t fdate, ftime; uint32_t fsize;
+    if (path[0] == '0' && path[1] == ':') {
+        struct lfs_info info;
+        int lfsresult = lfs_stat(&lfs_volume, (const char *)&path[2], &info);
+        if (lfsresult < 0)
+            return api_return_errno(API_ELFSFS(lfsresult));
+        fattrib = (info.type == LFS_TYPE_DIR) ? AM_DIR : 0;
+        fdate = 0; ftime = 0; fsize = info.size;
+    } else {
+        FILINFO fno;
+        FRESULT fresult = f_stat((TCHAR *)path, &fno);
+        if (fresult != FR_OK)
+            return api_return_errno(API_EFATFS(fresult));
+        fattrib = fno.fattrib; fdate = fno.fdate; ftime = fno.ftime; fsize = (uint32_t)fno.fsize;
+    }
+    api_push_uint16(&ftime);
+    api_push_uint16(&fdate);
+    api_push_uint8(&fattrib);
+    api_sync_xstack();
+    return api_return_axsreg(fsize);
+}

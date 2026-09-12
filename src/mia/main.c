@@ -267,6 +267,12 @@ bool main_api(uint8_t operation)
     case 0x1C:
         std_api_rename();
         break;
+    case 0x1E:                       /* fs-posix : SYNCFS */
+        std_api_syncfs();
+        break;
+    case 0x1F:                       /* fs-posix : STAT */
+        std_api_stat();
+        break;
     case 0x80:
         dir_api_opendir();
         break;
@@ -278,6 +284,12 @@ bool main_api(uint8_t operation)
         break;
     case 0x83:
         dir_api_mkdir();
+        break;
+    case 0x84:                       /* fs-posix : CHDIR */
+        dir_api_chdir();
+        break;
+    case 0x85:                       /* fs-posix : GETFREE */
+        dir_api_getfree();
         break;
     case 0x88:
         mnt_api_getcwd();
