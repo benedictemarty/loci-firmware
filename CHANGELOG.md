@@ -16,7 +16,9 @@ d'origine). Validé en co-simulation (`!VER` → `LOCI FW 0.3.1`, `!FOO` → err
 et cassette intacts). **v0.3** : trampoline piloté par table (`!VER`, `!MEM` = espace libre `0:`),
 **BASIC 1.0 couvert** (handler `$CC89`, init `$EA80`, zones mortes `$E5D6`/`$E641`), header généré
 `api/bext_tramp.h` (`extensions/basic-ext-AB/src`, `make`). Règle : pas de mot-clé BASIC dans un
-mot `!` (le tokeniseur remplace `FRE` dans `FREE`).
+mot `!` (le tokeniseur remplace `FRE` dans `FREE`). **v0.4** : signature par entrée — `2` = « adresse,octet »
+évalués par la routine des arguments de POKE de la ROM (`$D916`/`$D85B`), poussés sur la xstack ; démo
+`!XSET a,v` (écrit la XRAM). Validé co-sim 1.1b + 1.0.
 
 ### 2026-09-13 — branche `feature/fs-posix` : `$1E SYNCFS`, `$1F STAT`, `$84 CHDIR`, `$85 GETFREE` ; `xstack_ptr` initialisé
 
