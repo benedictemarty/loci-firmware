@@ -481,6 +481,7 @@ void mia_task(void)
                         for(uint16_t i=0; i<sizeof(mia_write_byte_patch); i++){
                             xram[WRITE_BYTE_PATCH_10_ADDR+i] = mia_write_byte_patch[i];
                         }
+                        bext_install_10();   //`!` -> trampoline dans la zone morte de write_byte (prototype $AB)
                         if(!!(mia_boot_settings & MIA_BOOTSET_TAP_ALD)){
                             for(uint16_t i=0; i<sizeof(mia_autoload_setup_patch_10); i++){
                                 xram[AUTOLOAD_SETUP_PATCH_10_ADDR+i] = mia_autoload_setup_patch_10[i];
