@@ -11,8 +11,8 @@
  *
  *   !VER   -> primitive 0 : chaîne de version
  *   !MEM   -> primitive 1 : espace libre du FS interne 0:
- *   !XSET a,v -> primitive 2 (signature 2 : arguments évalués par les routines de
- *              POKE de la ROM, poussés octet puis adresse) : xram[a] = v, confirme
+ *   !XSET a,v -> primitive 2, N = 2 arguments 16 bits évalués par la ROM (FRMNUM /
+ *              GETADR / CHKCOM, expressions et erreurs BASIC natives) : xram[a] = v
  *   inconnu -> comportement `!` d'origine (JMP défaut)
  *
  * Le firmware pousse une chaîne terminée par 0 ; le trampoline la dépile et
@@ -68,6 +68,16 @@ static void bext_push_str(const char *s)
         api_push_uint8((const uint8_t *)&s[--n]);
 }
 
+/* Dépile N arguments 16 bits poussés par le trampoline (du dernier au premier)
+ * dans l'ordre naturel args[0..n-1]. 0 si la pile ne les contient pas. */
+static bool bext_pop_args(uint16_t *args, int n)
+{
+    for (int i = n - 1; i >= 0; i--)
+        if (!api_pop_uint16(&args[i]))
+            return false;
+    return true;
+}
+
 /* $AB — A = primitive. Rend 0 + chaîne poussée ; EINVAL sinon. */
 void bext_api_prim(void)
 {
@@ -86,11 +96,11 @@ void bext_api_prim(void)
         bext_push_str(buf);
         break; }
     case 2: {                                     /* XSET adresse,valeur : octet de la XRAM LOCI */
-        uint16_t addr; uint8_t val;
-        if (!api_pop_uint16(&addr) || !api_pop_uint8(&val))
+        uint16_t a[2];
+        if (!bext_pop_args(a, 2))
             return api_return_errno(API_EINVAL);
-        xram[addr] = val;
-        snprintf(buf, sizeof buf, "XRAM $%04X = $%02X\r\n", addr, val);
+        xram[a[0]] = (uint8_t)a[1];
+        snprintf(buf, sizeof buf, "XRAM $%04X = $%02X\r\n", a[0], (uint8_t)a[1]);
         bext_push_str(buf);
         break; }
     default:
