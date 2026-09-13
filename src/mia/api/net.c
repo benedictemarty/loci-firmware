@@ -55,7 +55,10 @@
  * chaîne « YYYY-MM-DD HH:MM:SS » (heure locale du dongle) poussée sur le xstack.
  * X bit 0 = régler aussi l'horloge temps réel de LOCI (RTC) sur cet epoch.
  *
- * Ce qui reste ABSENT : prefix, multi-connexions.
+ * Lot 6 — `$B7` A=3 prefix(chaîne) : base d'URL (façon FujiNet « répertoire courant ») ;
+ * `open("N:page")` sans schéma → prefix + « page ». Chaîne vide = efface.
+ *
+ * Ce qui reste ABSENT : multi-connexions.
  */
 
 #include "api/api.h"
@@ -107,6 +110,9 @@ enum net_state {
 #define NET_ESC_GUARD_US (1100ull * 1000)   /* garde autour de +++ (modem : 1 s) */
 #define NET_HANGUP_TAIL_US (300ull * 1000)  /* laisser le modem répondre à ATH */
 #define NET_DIAL_TIMEOUT_US (30ull * 1000 * 1000)
+
+#define NET_PREFIX_MAX 96
+static char net_prefix[NET_PREFIX_MAX];   /* lot 6 : base d'URL, "" = aucune */
 
 static struct {
     enum net_state state;
@@ -225,6 +231,14 @@ int net_open(const uint8_t *path, uint8_t flags)
     const char *url = (const char *)path + 2;   /* saute « N: » */
     if (!url[0])
         return API_EINVAL;
+    /* Lot 6 : sans schéma (pas de « :// »), on préfixe par la base courante. */
+    char full[NET_CMD_MAX];
+    if (net_prefix[0] && !strstr(url, "://")) {
+        int n = snprintf(full, sizeof full, "%s%s", net_prefix, url);
+        if (n <= 0 || n >= (int)sizeof full)
+            return API_EINVAL;
+        url = full;
+    }
 
     int dev = net_modem_dev();
     if (dev < 0)
@@ -696,6 +710,7 @@ int net_json_query(void)
 #define NET_CTL_STATUS 0
 #define NET_CTL_JSON   4
 #define NET_CTL_TIME   5
+#define NET_CTL_PREFIX 3
 
 /* A=5 : lance AT$TIME? puis, quand la réponse est là, rend epoch + chaîne. */
 static void net_api_time(void)
@@ -752,6 +767,16 @@ void net_api_control(void)
     }
     case NET_CTL_TIME:
         return net_api_time();
+    case NET_CTL_PREFIX: {
+        /* Chaîne sur le xstack (comme un chemin) ; vide = efface. */
+        uint16_t n = (uint16_t)(XSTACK_SIZE - xstack_ptr);
+        if (n >= NET_PREFIX_MAX)
+            return api_return_errno(API_EINVAL);
+        memcpy(net_prefix, &xstack[xstack_ptr], n);
+        net_prefix[n] = 0;
+        api_zxstack();
+        return api_return_ax(0);
+    }
     case NET_CTL_JSON: {
         int n = net_json_query();
         if (n < 0) return api_return_errno((uint8_t)-n);

@@ -4,6 +4,11 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 6, `prefix` (`$B7` A=3)
+
+`api/net.c` : base d'URL (`net_prefix`, 96 o) posée par A=3 (xstack, vide = efface) ; `open("N:…")`
+sans `://` → base+chemin. `test_net` M. Le device `N:` couvre désormais toute la table §4.2 de la spec.
+
 ### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 5, `time()` (`$B7` A=5)
 
 `api/net.c` : `AT$TIME?` (format lu dans les sources PicoWiFi `at_proprietary.h` : « YYYY-MM-DD
