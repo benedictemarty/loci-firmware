@@ -41,7 +41,14 @@
  * modem, comme pour tout programme terminal. Lecture NON bloquante conseillée :
  * interroger `$B7 status` (avail) avant read_xram, qui bloque l'anneau vide.
  *
- * Ce qui reste ABSENT : prefix, json_query, multi-connexions.
+ * Lot 4 — `$B7` A=4 json_query(chemin) : extrait un champ du corps JSON encore
+ * dans l'anneau (≤ 2 Ko, non lu, transaction en ST_EOF de préférence) sans que
+ * le 6502 parse quoi que ce soit. Chemin pointé « a.b[2].c » ; valeur renvoyée
+ * sur le xstack (chaîne sans guillemets, nombre/true/false/null tels quels,
+ * objet/tableau = texte brut), AX = longueur ; ENOENT si absent, EINVAL si
+ * l'anneau n'est pas un JSON exploitable. Non destructif (le corps reste lisible).
+ *
+ * Ce qui reste ABSENT : prefix, multi-connexions.
  */
 
 #include "api/api.h"
@@ -521,9 +528,119 @@ void net_stop(void)
     net_reset();
 }
 
+/* ── json_query (lot 4) : navigation minimale dans l'anneau, sans copie ── */
+
+static inline int jb(uint16_t i)            /* octet i du corps non lu, -1 au-delà */
+{
+    return i < ring_used() ? net.ring[(net.tail + i) & NET_RING_MASK] : -1;
+}
+static uint16_t jskip_ws(uint16_t i) { int c; while ((c = jb(i)) == ' ' || c == '\t' || c == '\r' || c == '\n') i++; return i; }
+/* Fin (exclusive) de la valeur commençant en i : chaîne, nombre/mot, objet/tableau (équilibré). */
+static uint16_t jvalue_end(uint16_t i)
+{
+    int c = jb(i);
+    if (c == '"') {
+        for (i++; (c = jb(i)) >= 0; i++) { if (c == '\\') i++; else if (c == '"') return (uint16_t)(i + 1); }
+        return i;
+    }
+    if (c == '{' || c == '[') {
+        int depth = 0; bool instr = false;
+        for (; (c = jb(i)) >= 0; i++) {
+            if (instr) { if (c == '\\') i++; else if (c == '"') instr = false; continue; }
+            if (c == '"') instr = true;
+            else if (c == '{' || c == '[') depth++;
+            else if (c == '}' || c == ']') { if (--depth == 0) return (uint16_t)(i + 1); }
+        }
+        return i;
+    }
+    while ((c = jb(i)) >= 0 && c != ',' && c != '}' && c != ']' && c != ' ' && c != '\r' && c != '\n' && c != '\t') i++;
+    return i;
+}
+/* Dans l'objet en i : position de la valeur de la clé (len octets), ou -1. */
+static int jfind_key(uint16_t i, const char *key, uint8_t klen)
+{
+    if (jb(i) != '{') return -1;
+    i = jskip_ws((uint16_t)(i + 1));
+    while (jb(i) == '"') {
+        uint16_t ks = (uint16_t)(i + 1), ke = ks;
+        int c;
+        while ((c = jb(ke)) >= 0 && c != '"') { if (c == '\\') ke++; ke++; }
+        bool match = (ke - ks == klen);
+        for (uint8_t k = 0; match && k < klen; k++) if (jb((uint16_t)(ks + k)) != (uint8_t)key[k]) match = false;
+        i = jskip_ws((uint16_t)(ke + 1));
+        if (jb(i) != ':') return -1;
+        i = jskip_ws((uint16_t)(i + 1));
+        if (match) return i;
+        i = jskip_ws(jvalue_end(i));
+        if (jb(i) != ',') return -1;
+        i = jskip_ws((uint16_t)(i + 1));
+    }
+    return -1;
+}
+/* Dans le tableau en i : position de l'élément n, ou -1. */
+static int jfind_index(uint16_t i, unsigned n)
+{
+    if (jb(i) != '[') return -1;
+    i = jskip_ws((uint16_t)(i + 1));
+    for (;;) {
+        if (jb(i) == ']' || jb(i) < 0) return -1;
+        if (n == 0) return i;
+        i = jskip_ws(jvalue_end(i));
+        if (jb(i) != ',') return -1;
+        i = jskip_ws((uint16_t)(i + 1));
+        n--;
+    }
+}
+
+/* Chemin « a.b[2].c » depuis le xstack ; pousse la valeur, renvoie sa longueur ou -errno. */
+int net_json_query(void)
+{
+    const char *path = (const char *)&xstack[xstack_ptr];
+    uint16_t plen = (uint16_t)(XSTACK_SIZE - xstack_ptr);
+    if (net.state == ST_IDLE || net.state == ST_WBUF || net.state == ST_ERR || !ring_used())
+        return -API_EINVAL;
+    int pos = (int)jskip_ws(0);
+    uint16_t p = 0;
+    while (p < plen && path[p]) {
+        if (path[p] == '.') { p++; continue; }
+        if (path[p] == '[') {
+            unsigned n = 0; p++;
+            while (p < plen && path[p] >= '0' && path[p] <= '9') n = n * 10 + (unsigned)(path[p++] - '0');
+            if (p >= plen || path[p] != ']') return -API_EINVAL;
+            p++;
+            pos = jfind_index((uint16_t)pos, n);
+        } else {
+            uint16_t ks = p;
+            while (p < plen && path[p] && path[p] != '.' && path[p] != '[') p++;
+            pos = jfind_key((uint16_t)pos, path + ks, (uint8_t)(p - ks));
+        }
+        if (pos < 0) return -API_ENOENT;
+    }
+    /* Valeur : chaîne sans guillemets (échappements \" \\ \/ \n \t \r réduits), sinon texte brut. */
+    uint8_t out[255]; uint16_t n = 0;
+    uint16_t end = jvalue_end((uint16_t)pos);
+    if (jb((uint16_t)pos) == '"') {
+        for (uint16_t i = (uint16_t)(pos + 1); i + 1 < end && n < sizeof out; i++) {
+            int c = jb(i);
+            if (c == '\\') {
+                int e = jb(++i);
+                c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e;
+            }
+            out[n++] = (uint8_t)c;
+        }
+    } else {
+        for (uint16_t i = (uint16_t)pos; i < end && n < sizeof out; i++) out[n++] = (uint8_t)jb(i);
+    }
+    api_zxstack();
+    if (!api_push_n(out, n)) return -API_EINVAL;
+    api_sync_xstack();
+    return n;
+}
+
 /* ── opcode $B7 : net_control ── */
 
 #define NET_CTL_STATUS 0
+#define NET_CTL_JSON   4
 
 void net_api_control(void)
 {
@@ -548,9 +665,14 @@ void net_api_control(void)
         api_sync_xstack();
         return api_return_ax(0);
     }
+    case NET_CTL_JSON: {
+        int n = net_json_query();
+        if (n < 0) return api_return_errno((uint8_t)-n);
+        return api_return_ax((uint16_t)n);
+    }
     default:
-        /* Sous-fonctions non implémentées dans ce lot (set_mode, wifi, prefix,
-         * json_query, time) : erreur explicite plutôt que silence. */
+        /* Sous-fonctions non implémentées (set_mode, wifi, prefix, time) :
+         * erreur explicite plutôt que silence. */
         return api_return_errno(API_EINVAL);
     }
 }

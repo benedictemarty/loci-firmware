@@ -4,6 +4,13 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 4, `json_query` (`$B7` A=4)
+
+`api/net.c` : navigateur JSON minimal sans copie sur le corps non lu de l'anneau (`jb()` modulo) :
+chemin `a.b[2].c` depuis le xstack, valeur poussée sur le xstack (chaîne sans guillemets,
+échappements réduits ; nombre/mot brut ; objet/tableau = texte), AX = longueur ; `ENOENT`,
+`EINVAL`. Non destructif. Validé `emul/test_net` K (37/37) et programme 6502 `netjson`.
+
 ### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 3, flux TCP brut
 
 `api/net.c` : `open("N:tcp://h:p")` (tout mode) → `ATDT-h:p` (`N:telnet://` → `ATDT=`), état

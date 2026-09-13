@@ -82,5 +82,7 @@ uint8_t net_errno(void);
 
 /* Opcode `$B7` — net_control. `API_A` = sous-fonction (0 = status). */
 void net_api_control(void);
+/* $B7 A=4 : chemin sur le xstack → valeur poussée sur le xstack ; longueur ou -errno. */
+int net_json_query(void);
 
 #endif /* _NET_H_ */
