@@ -4,6 +4,18 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/save-state-B0` : save-state `$B0` (fichier `0:/LOCI.SNP`)
+
+`api/snap.{c,h}` : le gel existant (bouton court → trap IRQ `$03BA` → `restore.s` du menu range
+ZP, `$0100-$1FFF`, VRAM, VIA, registres en XRAM `[0,$3F0F)`) devient persistant. `A=0/1` :
+lecture/écriture des `map_flags` du gel (`mia_get/set_saved_map_flags`, `sys/mia.c`) ; `A=2, X=0/1`
+BEGIN sauvegarde/chargement (en-tête 16 o `"LOCISNP\0"`, version 1, `map_flags` + bloc A) ;
+`A=3` CHUNK = XRAM `[$8000, +16 Ko)` (la ROM y recopie la RAM `$2000-$9FFF` par tranches via
+`$03A4`) ; `A=4` END. Erreurs : `EINVAL` (séquence), `ENOEXEC` (en-tête), `EIO` (court), lfs.
+L'E/S fichier est côté firmware car la ROM 16 Ko est pleine. Validé `emul/test_snap` (build XIP :
+le bloc A chevauche le code en copy_to_ram) et cycle complet Phosphoric (reprise d'un compteur
+BASIC après boot à froid et depuis une session neuve). `src/roms/locirom` (ignoré par git) doit être la ROM menu avec `n`/`l` : copier `rom/src/locirom` puis relancer `cmake` (ressources générées à la configuration).
+
 ### 2026-09-13 — branche `feature/ram-expansion-AF` : expansion RAM paginée `$AF` (128 Ko en XIP)
 
 `api/ramx.{c,h}` : fenêtre de 32 o en `$03C0-$03DF` (read-serve + io-page), `$03E0/$03E1` = page

@@ -157,6 +157,7 @@ target_sources(loci-firmware PRIVATE
     mia/api/api.c
     mia/api/bext.c
     mia/api/ramx.c
+    mia/api/snap.c
     mia/api/clk.c
     mia/api/dir.c
     mia/api/mnt.c

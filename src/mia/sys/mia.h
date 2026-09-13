@@ -78,6 +78,8 @@ unsigned int mia_get_ula_prg_offset(void);
 void mia_clear_snoop_flag(void);
 bool mia_get_snoop_flag(void);
 void mia_save_map_flags(void);
+uint8_t mia_get_saved_map_flags(void);   /* $B0 : flags ROM/device figés au gel (repris par la reprise) */
+void    mia_set_saved_map_flags(uint8_t f);
 
 #define MIA_BOOTSET_FDC 0x01
 #define MIA_BOOTSET_TAP 0x02

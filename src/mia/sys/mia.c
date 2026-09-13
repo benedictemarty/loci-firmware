@@ -72,6 +72,9 @@ bool mia_get_snoop_flag(void){
     return snoop_flag;
 }
 
+uint8_t mia_get_saved_map_flags(void){ return saved_map_flags; }
+void    mia_set_saved_map_flags(uint8_t f){ saved_map_flags = f; }
+
 void mia_save_map_flags(void){
     saved_map_flags = map_flags;
 }

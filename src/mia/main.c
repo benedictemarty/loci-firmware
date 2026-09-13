@@ -15,6 +15,7 @@
 #include "api/std.h"
 #include "api/bext.h"
 #include "api/ramx.h"
+#include "api/snap.h"
 #include "api/net.h"
 //#include "aud/aud.h"
 #include "mon/fil.h"
@@ -347,6 +348,9 @@ bool main_api(uint8_t operation)
         break;
     case 0xAF:                       /* expansion RAM paginée */
         ramx_api();
+        break;
+    case 0xB0:                       /* save-state : map_flags du gel */
+        snap_api();
         break;
     case 0xB7:
         net_api_control();
