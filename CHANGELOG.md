@@ -4,6 +4,13 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/ram-expansion-AF` : expansion RAM paginée `$AF` (128 Ko en XIP)
+
+`api/ramx.{c,h}` : fenêtre de 32 o en `$03C0-$03DF` (read-serve + io-page), `$03E0/$03E1` = page
+(bascule immédiate dans l'act_loop, 8+8 mots), `$03E2/3` = NPAGES, `$03E4` = 32 (lecture seule) ;
+opcode `$AF` (`info`, `set_page`). `LOCI_RAMX_KB` (CMake) : 128 en XIP (SRAM 94,5 %), 0 en
+copy_to_ram (NPAGES = 0, détectable). Validé co-sim (`emul/test_ramx`, BASIC POKE/PEEK).
+
 ### 2026-09-13 — branche `feature/basic-ext-AB` : extension BASIC `!` (prototype `$AB`, `!VER`)
 
 `api/bext.c` : quand la cassette passe par LOCI et que la ROM servie est BASIC 1.1b, le vecteur
