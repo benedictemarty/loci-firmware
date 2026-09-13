@@ -10,7 +10,9 @@
  * JSR install ; NOP ×3 pour poser le vecteur au démarrage à froid.
  *
  *   !VER   -> primitive 0 : chaîne de version
- *   !FREE  -> primitive 1 : espace libre du FS interne 0:
+ *   !MEM   -> primitive 1 : espace libre du FS interne 0:
+ *   !XSET a,v -> primitive 2 (signature 2 : arguments évalués par les routines de
+ *              POKE de la ROM, poussés octet puis adresse) : xram[a] = v, confirme
  *   inconnu -> comportement `!` d'origine (JMP défaut)
  *
  * Le firmware pousse une chaîne terminée par 0 ; le trampoline la dépile et
@@ -81,6 +83,14 @@ void bext_api_prim(void)
         uint32_t total = lfs_volume.cfg->block_count;
         uint32_t kb = (total - (uint32_t)used) * (lfs_volume.cfg->block_size / 1024);
         snprintf(buf, sizeof buf, "0: %lu KB FREE\r\n", (unsigned long)kb);
+        bext_push_str(buf);
+        break; }
+    case 2: {                                     /* XSET adresse,valeur : octet de la XRAM LOCI */
+        uint16_t addr; uint8_t val;
+        if (!api_pop_uint16(&addr) || !api_pop_uint8(&val))
+            return api_return_errno(API_EINVAL);
+        xram[addr] = val;
+        snprintf(buf, sizeof buf, "XRAM $%04X = $%02X\r\n", addr, val);
         bext_push_str(buf);
         break; }
     default:
