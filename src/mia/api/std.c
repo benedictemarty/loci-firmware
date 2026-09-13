@@ -367,6 +367,14 @@ static void std_out_write(char *ptr)
     }
 }
 
+/* Retour d'un net_write : count, ou errno (-2 = pas en ecriture, -3 = corps > tampon). */
+static void std_net_write_return(int32_t n)
+{
+    if (n == -3) return api_return_errno(API_ENOSPC);
+    if (n < 0)   return api_return_errno(API_EINVAL);
+    return api_return_ax((uint16_t)n);
+}
+
 void std_api_write_xstack(void)
 {
     if (std_xram_count >= 0)
@@ -374,6 +382,12 @@ void std_api_write_xstack(void)
     uint8_t *buf;
     uint16_t count;
     int fd = API_A;
+    if (fd >= STD_NET_OFFS && fd < STD_FD_END) {   /* device reseau N: en ecriture (PUT) */
+        count = XSTACK_SIZE - xstack_ptr;
+        buf = &xstack[xstack_ptr];
+        api_zxstack();
+        return std_net_write_return(net_write(buf, count));
+    }
     if (fd == STD_FIL_STDIN || fd >= STD_LFS_MAX + STD_LFS_OFFS)
         return api_return_errno(API_EINVAL);
     count = XSTACK_SIZE - xstack_ptr;
@@ -410,7 +424,8 @@ void std_api_write_xram(void)
     uint16_t xram_addr;
     uint16_t count;
     int fd = API_A;
-    if (fd == STD_FIL_STDIN || fd >= STD_LFS_MAX + STD_LFS_OFFS)
+    bool is_net = (fd >= STD_NET_OFFS && fd < STD_FD_END);
+    if (!is_net && (fd == STD_FIL_STDIN || fd >= STD_LFS_MAX + STD_LFS_OFFS))
         return api_return_errno(API_EINVAL);
     if (!api_pop_uint16(&count) ||
         !api_pop_uint16_end(&xram_addr))
@@ -420,6 +435,8 @@ void std_api_write_xram(void)
         return api_return_errno(API_EINVAL);
     if (count > 0x7FFF)
         count = 0x7FFF;
+    if (is_net)                                     /* device reseau N: en ecriture (PUT) */
+        return std_net_write_return(net_write(buf, count));
     if (fd < STD_FIL_OFFS)
     {
         api_set_ax(count);

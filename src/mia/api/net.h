@@ -67,6 +67,11 @@ int net_open(const uint8_t *path, uint8_t flags);
  *  == -2 : erreur ; `net_errno()` en donne la raison */
 int32_t net_read(uint8_t *dst, uint16_t count);
 
+/* Écriture (lot 2, fd ouvert O_WRONLY) : ajoute count octets au corps du PUT.
+ * Renvoie count, -2 si le fd n'est pas en écriture, -3 si le corps dépasse le
+ * tampon (2 Ko). Le PUT est émis au close() (ATDISKWR<url>?len=N + corps). */
+int32_t net_write(const uint8_t *src, uint16_t count);
+
 /* Ferme la transaction et rend le lien modem au mode passe-plat. */
 void net_close(void);
 

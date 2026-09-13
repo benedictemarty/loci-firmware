@@ -4,6 +4,15 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 2, écriture (PUT binaire)
+
+`api/net.c` : `open("N:url", O_WRONLY)` → `ST_WBUF`, `net_write` accumule le corps dans l'anneau
+(≤ 2 Ko, `ENOSPC` au-delà), `close` émet `ATDISKWR<url>?len=N\r` + N octets bruts (commande
+binaire du dongle ; `ATPOST` corrompt le binaire) et rend la main — `net_task` pompe la réponse,
+statut via `$B7 status`, canal libéré au `open` suivant. `std.c` : `write_xram`/`write_xstack`
+routés vers `net_write` pour le fd `N:` ; `read` sur un fd en écriture → `EINVAL`. Validé
+`emul/test_net` cas I (19/19) et programme 6502 `netput` (300 o identiques après PUT+GET).
+
 ### 2026-09-13 — branche `feature/save-state-B0` : save-state `$B0` (fichier `0:/LOCI.SNP`)
 
 `api/snap.{c,h}` : le gel existant (bouton court → trap IRQ `$03BA` → `restore.s` du menu range

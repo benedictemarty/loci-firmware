@@ -17,8 +17,17 @@
  *                           -> 0 à l'EOF
  *   close(fd)               -> ST_IDLE, le lien modem retourne au passe-plat
  *
- * Ce qui est délibérément ABSENT de ce lot : POST (`ATPOST`), `tcp://`, prefix,
- * json_query, multi-connexions. Le lot 1 fait le GET, proprement.
+ * Lot 2 — écriture (PUT) :
+ *
+ *   open("N:http://h/p", W)  -> ST_WBUF    (le corps s'accumule dans l'anneau, linéaire)
+ *   write_xram(fd, n)        -> ajoute n octets (ENOSPC au-delà de NET_RING_SIZE)
+ *   close(fd)                -> ST_SEND    « ATDISKWR<url>?len=N\r » + N octets bruts
+ *                            -> ST_RECV    réponse HTTP du serveur (statut via $B7 status)
+ *                            -> ST_EOF     ; le prochain open libère
+ * `ATDISKWR` est la commande binaire ajoutée au dongle pour le disque web (PUT,
+ * octets bruts cadrés par `len=`) : `ATPOST` corrompt le binaire (spec §1.2).
+ *
+ * Ce qui reste ABSENT : `tcp://`, prefix, json_query, multi-connexions.
  */
 
 #include "api/api.h"
@@ -53,10 +62,11 @@ static_assert((NET_RING_SIZE & NET_RING_MASK) == 0, "NET_RING_SIZE doit etre une
 
 enum net_state {
     ST_IDLE = 0,   /* aucun fd réseau ouvert */
-    ST_SEND,       /* commande AT en cours d'émission */
+    ST_SEND,       /* commande AT (+ corps en écriture) en cours d'émission */
     ST_RECV,       /* réponse en cours de réception */
     ST_EOF,        /* corps complet ; l'anneau peut encore contenir des octets */
-    ST_ERR         /* transaction échouée (net_errno) */
+    ST_ERR,        /* transaction échouée (net_errno) */
+    ST_WBUF        /* ouvert en écriture : le corps s'accumule (lot 2) */
 };
 
 static struct {
@@ -66,6 +76,8 @@ static struct {
 
     char     cmd[NET_CMD_MAX];
     uint16_t cmd_len, cmd_sent;
+    uint16_t body_len, body_sent;   /* écriture : corps linéaire dans ring[0..body_len) */
+    bool     writing;
 
     nh_parser hp;
 
@@ -95,6 +107,8 @@ static void net_reset(void)
     net.dev = -1;
     net.errno_api = 0;
     net.cmd_len = net.cmd_sent = 0;
+    net.body_len = net.body_sent = 0;
+    net.writing = false;
     net.head = net.tail = 0;
     net.deadline = 0;
     net.got_first = false;
@@ -111,7 +125,8 @@ bool net_owns_modem(void)
 {
     /* ST_EOF garde le lien : le « NO CARRIER » de fin arrive après le corps et
      * ne doit pas être servi au mode passe-plat comme si c'était des données. */
-    return net.state == ST_SEND || net.state == ST_RECV || net.state == ST_EOF;
+    return net.state == ST_SEND || net.state == ST_RECV || net.state == ST_EOF ||
+           net.state == ST_WBUF;
 }
 
 uint8_t net_errno(void) { return net.errno_api; }
@@ -123,16 +138,34 @@ bool net_is_path(const uint8_t *path)
 
 /* ── ouverture ── */
 
+static int net_purge_and_arm(int dev)
+{
+    /* Purge des octets en attente (réponse précédente, bruit) : sans ça le
+     * parseur démarrerait au milieu d'une trame. Borné, non bloquant. */
+    uint8_t tmp[64];
+    for (int guard = 0; guard < 64 && tuh_cdc_read_available((uint8_t)dev); guard++)
+        tuh_cdc_read((uint8_t)dev, tmp, sizeof tmp);
+    net.state = ST_SEND;
+    net.deadline = time_us_64() + NET_SEND_TIMEOUT_US;
+    return 0;
+}
+
 int net_open(const uint8_t *path, uint8_t flags)
 {
     const unsigned char RDWR = 0x03;
+    uint8_t rw = flags & RDWR;
 
+    /* Canal AT unique : une transaction à la fois. Un PUT dont la réponse est
+     * arrivée (ST_EOF) ou a échoué (ST_ERR) ne bloque pas : on le libère ici. */
+    if (net.state == ST_EOF || net.state == ST_ERR)
+        net_reset();
     if (net.state != ST_IDLE)
-        return API_EMFILE;          /* canal AT unique : une transaction à la fois */
+        return API_EMFILE;
 
-    /* Lot 1 : lecture seule. Un open en écriture demanderait ATPOST (§4.3). */
-    if ((flags & RDWR) != 0x01 && (flags & RDWR) != 0x00)
+    /* Lecture (GET) ou écriture (PUT via ATDISKWR) ; pas de RDWR sur un flux. */
+    if (rw == 0x03)
         return API_EINVAL;
+    bool writing = (rw == 0x02);
 
     const char *url = (const char *)path + 2;   /* saute « N: » */
     if (!url[0])
@@ -144,22 +177,56 @@ int net_open(const uint8_t *path, uint8_t flags)
 
     net_reset();
     net.dev = dev;
+    net.writing = writing;
+
+    if (writing) {
+        /* La commande n'est construite qu'au close (len= connu) : on garde l'URL. */
+        int n = snprintf(net.cmd, sizeof net.cmd, "%s", url);
+        if (n <= 0 || n >= (int)sizeof net.cmd - 32)   /* place pour ATDISKWR + ?len=NNNNN\r */
+            return API_EINVAL;
+        net.cmd_len = (uint16_t)n;
+        net.state = ST_WBUF;
+        return 0;
+    }
 
     int n = snprintf(net.cmd, sizeof net.cmd, "ATGET%s\r", url);
     if (n <= 0 || n >= (int)sizeof net.cmd)
         return API_EINVAL;          /* URL trop longue pour la commande AT */
     net.cmd_len = (uint16_t)n;
     net.cmd_sent = 0;
+    return net_purge_and_arm(dev);
+}
 
-    /* Purge des octets en attente (réponse précédente, bruit) : sans ça le
-     * parseur démarrerait au milieu d'une trame. Borné, non bloquant. */
-    uint8_t tmp[64];
-    for (int guard = 0; guard < 64 && tuh_cdc_read_available((uint8_t)dev); guard++)
-        tuh_cdc_read((uint8_t)dev, tmp, sizeof tmp);
+/* ── écriture (lot 2) ── */
 
-    net.state = ST_SEND;
-    net.deadline = time_us_64() + NET_SEND_TIMEOUT_US;
-    return 0;
+int32_t net_write(const uint8_t *src, uint16_t count)
+{
+    if (net.state != ST_WBUF)
+        return -2;                  /* pas ouvert en écriture (EINVAL) */
+    if ((uint32_t)net.body_len + count > NET_RING_SIZE)
+        return -3;                  /* corps plus grand que le tampon (ENOSPC) */
+    memcpy(&net.ring[net.body_len], src, count);
+    net.body_len = (uint16_t)(net.body_len + count);
+    return count;
+}
+
+/* close() d'un fd ouvert en écriture : émet la commande puis le corps, et laisse
+ * la réponse arriver (statut HTTP lisible par $B7 status jusqu'au prochain open). */
+static int net_commit(void)
+{
+    char url[NET_CMD_MAX];
+    memcpy(url, net.cmd, net.cmd_len);
+    url[net.cmd_len] = 0;
+    int n = snprintf(net.cmd, sizeof net.cmd, "ATDISKWR%s%clen=%u\r",
+                     url, strchr(url, '?') ? '&' : '?', (unsigned)net.body_len);
+    if (n <= 0 || n >= (int)sizeof net.cmd) {
+        net_fail(API_EINVAL);
+        return API_EINVAL;
+    }
+    net.cmd_len = (uint16_t)n;
+    net.cmd_sent = 0;
+    net.body_sent = 0;
+    return net_purge_and_arm(net.dev);
 }
 
 /* ── pompe de fond ──
@@ -183,8 +250,19 @@ void net_task(void)
                                                     net.cmd_len - net.cmd_sent);
             tuh_cdc_write_flush((uint8_t)net.dev);
         }
-        if (net.cmd_sent >= net.cmd_len) {
+        if (net.cmd_sent >= net.cmd_len && net.writing && net.body_sent < net.body_len) {
+            /* Corps brut à la suite de la commande (cadré par len=). */
+            if (tuh_cdc_write_available((uint8_t)net.dev)) {
+                net.body_sent += (uint16_t)tuh_cdc_write((uint8_t)net.dev,
+                                                         net.ring + net.body_sent,
+                                                         net.body_len - net.body_sent);
+                tuh_cdc_write_flush((uint8_t)net.dev);
+                net.deadline = time_us_64() + NET_SEND_TIMEOUT_US;
+            }
+        }
+        if (net.cmd_sent >= net.cmd_len && (!net.writing || net.body_sent >= net.body_len)) {
             net.state = ST_RECV;
+            net.head = net.tail = 0;    /* l'anneau redevient le tampon de RÉPONSE */
             net.deadline = time_us_64() + NET_FIRST_TIMEOUT_US;
         }
         return;
@@ -257,8 +335,8 @@ int32_t net_read(uint8_t *dst, uint16_t count)
 {
     if (net.state == ST_ERR)
         return -2;
-    if (net.state == ST_IDLE)
-        return -2;
+    if (net.state == ST_IDLE || net.state == ST_WBUF)
+        return -2;                  /* pas ouvert, ou ouvert en écriture */
 
     uint16_t used = ring_used();
     if (!used) {
@@ -282,6 +360,10 @@ void net_close(void)
 {
     if (net.state == ST_IDLE)
         return;
+    if (net.state == ST_WBUF) {
+        net_commit();               /* le PUT part maintenant ; net_task le pompe */
+        return;
+    }
     /* Le modem raccroche de lui-même en fin de transaction (« NO CARRIER »
      * observé après le corps) : aucun ATH à envoyer ici. Si l'appli ferme AVANT
      * la fin, les octets restants seront purgés au prochain net_open. */
