@@ -13,7 +13,10 @@ démarrage à froid sur un trampoline 6502 logé dans la zone morte `$E66E-$E6C8
 ROM : `STA $02F5 / STY $02F6` de `$ECF3` → `JSR install ; NOP ×3`. `!VER` → primitive 0 de `$AB`
 (chaîne poussée sur la xstack, affichée par `$F77C`) ; mot inconnu → `JMP $D336` (comportement
 d'origine). Validé en co-simulation (`!VER` → `LOCI FW 0.3.1`, `!FOO` → erreur d'origine, CALL
-et cassette intacts). Source du trampoline : `extensions/basic-ext-AB/src/tramp11.s`.
+et cassette intacts). **v0.3** : trampoline piloté par table (`!VER`, `!MEM` = espace libre `0:`),
+**BASIC 1.0 couvert** (handler `$CC89`, init `$EA80`, zones mortes `$E5D6`/`$E641`), header généré
+`api/bext_tramp.h` (`extensions/basic-ext-AB/src`, `make`). Règle : pas de mot-clé BASIC dans un
+mot `!` (le tokeniseur remplace `FRE` dans `FREE`).
 
 ### 2026-09-13 — branche `feature/fs-posix` : `$1E SYNCFS`, `$1F STAT`, `$84 CHDIR`, `$85 GETFREE` ; `xstack_ptr` initialisé
 
