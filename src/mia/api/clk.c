@@ -115,11 +115,15 @@ void clk_api_set_time(void)
     uint8_t clock_id = API_A;
     if (clock_id == CLK_ID_REALTIME)
     {
-        time_t rawtime;
+        uint32_t rawtime_sec;
         int32_t rawtime_nsec;
-        if (!api_pop_uint32((uint32_t *)&rawtime) ||
+        if (!api_pop_uint32(&rawtime_sec) ||
             !api_pop_int32_end(&rawtime_nsec))
             return api_return_errno(API_EINVAL);
+        /* time_t is 64-bit with current newlib: popping 32 bits straight into it left
+         * the upper half uninitialised, gmtime() produced an out-of-range year and
+         * rtc_set_datetime() rejected it (EUNKNOWN) — clock_settime never worked. */
+        time_t rawtime = (time_t)rawtime_sec;
         struct tm timeinfo = *gmtime(&rawtime);
         datetime_t rtc_info = {
             .year = timeinfo.tm_year + 1900,
