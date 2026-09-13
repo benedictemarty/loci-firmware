@@ -108,17 +108,16 @@ void std_api_open(void)
         path = &path[2];
         if (flags & CREAT)
         {
+            /* O_CREAT always creates (FatFs branch: FA_CREATE_ALWAYS/FA_OPEN_ALWAYS
+             * do the same); TRUNC/APPEND/EXCL refine it instead of replacing it.
+             * Before this fix, O_CREAT|O_TRUNC on a missing file returned ENOENT. */
+            mode |= LFS_O_CREAT;
             if (flags & EXCL)
                 mode |= LFS_O_EXCL;
-            else
-            {
-                if (flags & TRUNC)
-                    mode |= LFS_O_TRUNC;
-                else if (flags & APPEND)
-                    mode |= LFS_O_APPEND;
-                else
-                    mode |= LFS_O_CREAT;
-            }
+            else if (flags & TRUNC)
+                mode |= LFS_O_TRUNC;
+            else if (flags & APPEND)
+                mode |= LFS_O_APPEND;
         }
 
         int fd = 0;
