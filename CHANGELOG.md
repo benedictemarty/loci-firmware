@@ -4,6 +4,12 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `fix/lfs-open-creat-trunc` (C7) : `open(O_CREAT|O_TRUNC)` crée sur littlefs
+
+`api/std.c` : sous `O_CREAT`, `LFS_O_CREAT` est toujours posé, `TRUNC`/`APPEND`/`EXCL` l'affinent
+(avant : `O_CREAT|O_TRUNC` d'un fichier absent → `ENOENT`, alors que FatFs créait). Mesuré en
+co-sim (`emul/test_fsposix` F). Patch amont candidat `extensions/upstream-fixes/patches/0009`.
+
 ### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 4, `json_query` (`$B7` A=4)
 
 `api/net.c` : navigateur JSON minimal sans copie sur le corps non lu de l'anneau (`jb()` modulo) :
