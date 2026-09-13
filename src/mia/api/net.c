@@ -48,6 +48,13 @@
  * objet/tableau = texte brut), AX = longueur ; ENOENT si absent, EINVAL si
  * l'anneau n'est pas un JSON exploitable. Non destructif (le corps reste lisible).
  *
+ * Lot 5 — `$B7` A=5 time(X) : heure du dongle (`AT$TIME?`, réponse mesurée dans les
+ * sources PicoWiFi : « YYYY-MM-DD HH:MM:SS UTC+hh:mm (epoch N, synced|build-fallback) »
+ * puis OK). 1er appel : lance la requête (AX = 0, état TIME) ; appels suivants :
+ * EAGAIN tant que la réponse n'est pas là, puis AX:SREG = epoch UTC 32 bits et la
+ * chaîne « YYYY-MM-DD HH:MM:SS » (heure locale du dongle) poussée sur le xstack.
+ * X bit 0 = régler aussi l'horloge temps réel de LOCI (RTC) sur cet epoch.
+ *
  * Ce qui reste ABSENT : prefix, multi-connexions.
  */
 
@@ -59,7 +66,10 @@
 #include "pico/time.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 #include <assert.h>
+#include "hardware/rtc.h"
 
 #ifndef CFG_TUH_CDC
 #define CFG_TUH_CDC 4
@@ -90,7 +100,8 @@ enum net_state {
     ST_WBUF,       /* ouvert en écriture : le corps s'accumule (lot 2) */
     ST_DIAL,       /* tcp : numérotation, attente de CONNECT (lot 3) */
     ST_STREAM,     /* tcp : connecté, flux brut dans les deux sens */
-    ST_HANGUP      /* tcp : raccrochage en cours (+++ / ATH), canal encore tenu */
+    ST_HANGUP,     /* tcp : raccrochage en cours (+++ / ATH), canal encore tenu */
+    ST_TIME        /* AT$TIME? en cours (lot 5) */
 };
 
 #define NET_ESC_GUARD_US (1100ull * 1000)   /* garde autour de +++ (modem : 1 s) */
@@ -108,8 +119,12 @@ static struct {
     bool     writing;
     bool     stream;                /* lot 3 : transaction tcp:// */
     uint8_t  hang_step;             /* 0 attente garde, 1 +++ envoyé, 2 ATH envoyé */
-    char     line[48];              /* ST_DIAL : ligne de réponse en cours */
+    char     line[80];              /* ST_DIAL/ST_TIME : ligne de réponse en cours */
     uint8_t  line_len;
+    uint32_t time_epoch;            /* lot 5 : epoch UTC lu (0 = pas encore) */
+    char     time_str[20];          /* « YYYY-MM-DD HH:MM:SS » local */
+    bool     time_set_rtc;
+    bool     timing;                /* lot 5 : transaction AT$TIME? (SEND → TIME) */
     uint8_t  nc_match;              /* ST_STREAM : avancement dans "\r\nNO CARRIER" */
 
     nh_parser hp;
@@ -146,6 +161,10 @@ static void net_reset(void)
     net.hang_step = 0;
     net.line_len = 0;
     net.nc_match = 0;
+    net.time_epoch = 0;
+    net.time_str[0] = 0;
+    net.time_set_rtc = false;
+    net.timing = false;
     net.head = net.tail = 0;
     net.deadline = 0;
     net.got_first = false;
@@ -164,7 +183,7 @@ bool net_owns_modem(void)
      * ne doit pas être servi au mode passe-plat comme si c'était des données. */
     return net.state == ST_SEND || net.state == ST_RECV || net.state == ST_EOF ||
            net.state == ST_WBUF || net.state == ST_DIAL || net.state == ST_STREAM ||
-           net.state == ST_HANGUP;
+           net.state == ST_HANGUP || net.state == ST_TIME;
 }
 
 uint8_t net_errno(void) { return net.errno_api; }
@@ -323,7 +342,7 @@ void net_task(void)
             }
         }
         if (net.cmd_sent >= net.cmd_len && (!net.writing || net.body_sent >= net.body_len)) {
-            net.state = net.stream ? ST_DIAL : ST_RECV;
+            net.state = net.timing ? ST_TIME : net.stream ? ST_DIAL : ST_RECV;
             net.head = net.tail = 0;    /* l'anneau redevient le tampon de RÉPONSE */
             net.deadline = time_us_64() + (net.stream ? NET_DIAL_TIMEOUT_US : NET_FIRST_TIMEOUT_US);
         }
@@ -348,6 +367,41 @@ void net_task(void)
             for (int guard = 0; guard < 64 && tuh_cdc_read_available((uint8_t)net.dev); guard++)
                 tuh_cdc_read((uint8_t)net.dev, tmp, sizeof tmp);
             net_reset();
+        }
+        return;
+    }
+
+    if (net.state == ST_TIME) {
+        /* Lignes du modem : celle qui contient « (epoch N » donne l'heure ; OK termine. */
+        uint64_t now = time_us_64();
+        if (now > net.deadline) { net_fail(API_EIO); return; }
+        uint8_t ch;
+        while (tuh_cdc_read_available((uint8_t)net.dev) && tuh_cdc_read((uint8_t)net.dev, &ch, 1) == 1) {
+            if (ch == '\n' || ch == '\r') {
+                net.line[net.line_len] = 0;
+                if (net.line_len) {
+                    const char *ep = strstr(net.line, "(epoch ");
+                    if (ep) {
+                        net.time_epoch = (uint32_t)strtoul(ep + 7, NULL, 10);
+                        memcpy(net.time_str, net.line, 19); net.time_str[19] = 0;
+                    } else if (!strcmp(net.line, "OK")) {
+                        if (!net.time_epoch) { net_fail(API_EIO); return; }
+                        if (net.time_set_rtc) {
+                            time_t t = (time_t)net.time_epoch;
+                            struct tm ti = *gmtime(&t);
+                            datetime_t rtc = { .year = (int16_t)(ti.tm_year + 1900), .month = (int8_t)(ti.tm_mon + 1),
+                                               .day = (int8_t)ti.tm_mday, .dotw = (int8_t)ti.tm_wday,
+                                               .hour = (int8_t)ti.tm_hour, .min = (int8_t)ti.tm_min, .sec = (int8_t)ti.tm_sec };
+                            rtc_set_datetime(&rtc);
+                        }
+                        net.state = ST_EOF;   /* résultat prêt ; libéré par l'appel A=5 suivant */
+                        return;
+                    } else if (!strcmp(net.line, "ERROR")) { net_fail(API_EIO); return; }
+                }
+                net.line_len = 0;
+            } else if (net.line_len < sizeof net.line - 1) {
+                net.line[net.line_len++] = (char)ch;
+            }
         }
         return;
     }
@@ -641,6 +695,37 @@ int net_json_query(void)
 
 #define NET_CTL_STATUS 0
 #define NET_CTL_JSON   4
+#define NET_CTL_TIME   5
+
+/* A=5 : lance AT$TIME? puis, quand la réponse est là, rend epoch + chaîne. */
+static void net_api_time(void)
+{
+    if (net.state == ST_EOF && net.time_epoch) {
+        uint32_t epoch = net.time_epoch;
+        api_zxstack();
+        size_t n = strlen(net.time_str);
+        for (size_t i = n; i > 0; i--)
+            api_push_uint8((const uint8_t *)&net.time_str[i - 1]);
+        api_sync_xstack();
+        net_reset();
+        return api_return_axsreg(epoch);
+    }
+    if (net.state == ST_TIME || net.state == ST_SEND)
+        return api_return_errno(API_EAGAIN);   /* en cours : rappeler */
+    if (net.state != ST_IDLE)
+        return api_return_errno(API_EMFILE);   /* canal tenu par une autre transaction */
+    int dev = net_modem_dev();
+    if (dev < 0)
+        return api_return_errno(API_ENODEV);
+    net_reset();
+    net.dev = dev;
+    net.time_set_rtc = (API_X & 1) != 0;
+    net.timing = true;
+    memcpy(net.cmd, "AT$TIME?\r", 9);
+    net.cmd_len = 9; net.cmd_sent = 0;
+    net_purge_and_arm(dev);
+    return api_return_ax(0);
+}
 
 void net_api_control(void)
 {
@@ -665,6 +750,8 @@ void net_api_control(void)
         api_sync_xstack();
         return api_return_ax(0);
     }
+    case NET_CTL_TIME:
+        return net_api_time();
     case NET_CTL_JSON: {
         int n = net_json_query();
         if (n < 0) return api_return_errno((uint8_t)-n);

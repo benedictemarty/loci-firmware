@@ -4,6 +4,20 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 5, `time()` (`$B7` A=5)
+
+`api/net.c` : `AT$TIME?` (format lu dans les sources PicoWiFi `at_proprietary.h` : « YYYY-MM-DD
+HH:MM:SS UTC±hh:mm (epoch N, synced) » puis `OK`) ; 1er appel = lance (AX 0), rappels = `EAGAIN`
+puis `AX:SREG` = epoch UTC et « YYYY-MM-DD HH:MM:SS » (heure locale du dongle) sur le xstack ;
+X bit 0 = règle la RTC de LOCI. Validé `emul/test_net` L (43/43) et programme 6502 `nettime`
+(`clock_gettime` = heure du dongle). Découvert en chemin : **C8** ci-dessous.
+
+### 2026-09-13 — branche `fix/clk-set-time-64bit` (C8) : `clock_settime` ($12) ne marchait jamais
+
+`api/clk.c` : 32 bits dépilés directement dans un `time_t` **64 bits** (newlib) → moitié haute non
+initialisée → `gmtime` hors plage → `rtc_set_datetime` refuse → `EUNKNOWN` systématique. Mesuré
+co-sim (`emul/test_fsposix` G : aller-retour set/get exact après correctif). Patch amont 0010.
+
 ### 2026-09-13 — branche `fix/lfs-open-creat-trunc` (C7) : `open(O_CREAT|O_TRUNC)` crée sur littlefs
 
 `api/std.c` : sous `O_CREAT`, `LFS_O_CREAT` est toujours posé, `TRUNC`/`APPEND`/`EXCL` l'affinent
