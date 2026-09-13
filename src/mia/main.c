@@ -14,6 +14,7 @@
 #include "api/rng.h"
 #include "api/std.h"
 #include "api/bext.h"
+#include "api/ramx.h"
 #include "api/net.h"
 //#include "aud/aud.h"
 #include "mon/fil.h"
@@ -71,6 +72,7 @@ static void init(void)
     sys_init();
 
     // Load config before we continue
+    ramx_init();
     lfs_init();
     cfg_init();
 
@@ -342,6 +344,9 @@ bool main_api(uint8_t operation)
         break;
     case 0xAB:                       /* extension BASIC `!` (prototype) */
         bext_api_prim();
+        break;
+    case 0xAF:                       /* expansion RAM paginée */
+        ramx_api();
         break;
     case 0xB7:
         net_api_control();

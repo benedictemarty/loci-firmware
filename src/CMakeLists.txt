@@ -81,6 +81,19 @@ else()
     pico_set_binary_type(loci-firmware copy_to_ram)
 endif()
 
+# Expansion RAM paginée ($AF, api/ramx.c) : taille en Ko. Le build XIP laisse ~137 Ko
+# de SRAM libres (mesuré 2026-09-13) → 128 par défaut ; copy_to_ram (98 % de RAM) → 0
+# (fenêtre présente, NPAGES = 0 : détectable côté 6502). Surcharger : -DLOCI_RAMX_KB=n.
+if(NOT DEFINED LOCI_RAMX_KB)
+    if(LOCI_XIP)
+        set(LOCI_RAMX_KB 128)
+    else()
+        set(LOCI_RAMX_KB 0)
+    endif()
+endif()
+target_compile_definitions(loci-firmware PRIVATE LOCI_RAMX_KB=${LOCI_RAMX_KB})
+message(STATUS "LOCI: expansion RAM $AF = ${LOCI_RAMX_KB} Ko")
+
 # URL racine du serveur de disques web, qui active le pseudo-périphérique « W: »
 # du menu : `opendir("W:")` y liste `{base}/disks` et monter `W:jeu.dsk` attache
 # `{base}/disk/jeu.dsk` comme lecteur (api/dir.c, api/mnt.c, oric/dsk_web.c).
@@ -143,6 +156,7 @@ target_sources(loci-firmware PRIVATE
     mia/str.c
     mia/api/api.c
     mia/api/bext.c
+    mia/api/ramx.c
     mia/api/clk.c
     mia/api/dir.c
     mia/api/mnt.c

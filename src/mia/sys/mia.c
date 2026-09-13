@@ -8,6 +8,7 @@
 #include "main.h"
 #include "api/api.h"
 #include "api/bext.h"
+#include "api/ramx.h"
 #include "mon/rom.h"
 #include "sys/com.h"
 #include "sys/cpu.h"
@@ -1009,6 +1010,20 @@ void __not_in_flash() act_loop(void)
                         data = wait_act_data();
                         //Disabled write for LOCI identity marker
                         break;
+                    //Expansion RAM paginee ($AF) : selection de page = bascule de la fenetre $03C0
+                    case CASE_WRITE(RAMX_PAGE_LO):
+                        data = wait_act_data();
+                        ramx_select((uint16_t)(data | (IOREGS(RAMX_PAGE_HI) << 8)));
+                        break;
+                    case CASE_WRITE(RAMX_PAGE_HI):
+                        data = wait_act_data();
+                        ramx_select((uint16_t)(IOREGS(RAMX_PAGE_LO) | (data << 8)));
+                        break;
+                    case CASE_WRITE(RAMX_NPAGES):     //lecture seule
+                    case CASE_WRITE(RAMX_NPAGES + 1):
+                    case CASE_WRITE(RAMX_WSIZE_R):
+                        data = wait_act_data();
+                        break;
         
                     //Microdisc Device Read Register
                     case CASE_READ(DSK_IO_CMD):
@@ -1591,6 +1606,10 @@ void mia_init(void)
     }
     //Enable response on IO registers 0x3A0-0x3BF (LOCI)
     for(int i=(0xA0 >> 2); i<=(0xBF >> 2); i++){
+        mia_iopage_read_enable_map[1] |= (0x1UL << (i & 0x1F));
+    }
+    //Enable response on IO registers 0x3C0-0x3E4 (expansion RAM $AF : fenetre + registres)
+    for(int i=(0xC0 >> 2); i<=(0xE4 >> 2); i++){
         mia_iopage_read_enable_map[1] |= (0x1UL << (i & 0x1F));
     }
     //Optim read-serve : dérive la table de service directe depuis les enable-maps
