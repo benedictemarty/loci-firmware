@@ -4,6 +4,15 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/).
 
 ## [non publié]
 
+### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 3, flux TCP brut
+
+`api/net.c` : `open("N:tcp://h:p")` (tout mode) → `ATDT-h:p` (`N:telnet://` → `ATDT=`), état
+`ST_DIAL` (lignes du modem, `CONNECT` → `ST_STREAM`, refus → `EIO`, 30 s), flux brut vers
+l'anneau avec détection en bande de `\r\nNO CARRIER` (→ `ST_EOF`), `net_write` direct vers le
+modem, `close` → `ST_HANGUP` en fond (`+++` avec garde 1,1 s, `ATH`, purge). `read` = -1 avant
+`CONNECT`, -2 pendant le raccrochage. Validé `emul/test_net` cas J (29/29) et programme 6502
+`nettcp` (écho TCP réel via modem factice).
+
 ### 2026-09-13 — branche `feature/net-put-B7` : device `N:` lot 2, écriture (PUT binaire)
 
 `api/net.c` : `open("N:url", O_WRONLY)` → `ST_WBUF`, `net_write` accumule le corps dans l'anneau

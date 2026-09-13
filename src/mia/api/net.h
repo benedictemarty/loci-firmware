@@ -71,6 +71,8 @@ int32_t net_read(uint8_t *dst, uint16_t count);
  * Renvoie count, -2 si le fd n'est pas en écriture, -3 si le corps dépasse le
  * tampon (2 Ko). Le PUT est émis au close() (ATDISKWR<url>?len=N + corps). */
 int32_t net_write(const uint8_t *src, uint16_t count);
+/* Sur un flux tcp:// (lot 3) : envoie directement (renvoie le nombre accepté, 0 si
+ * le modem n'a pas de place — réessayer). */
 
 /* Ferme la transaction et rend le lien modem au mode passe-plat. */
 void net_close(void);

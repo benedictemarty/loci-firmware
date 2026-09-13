@@ -27,7 +27,21 @@
  * `ATDISKWR` est la commande binaire ajoutée au dongle pour le disque web (PUT,
  * octets bruts cadrés par `len=`) : `ATPOST` corrompt le binaire (spec §1.2).
  *
- * Ce qui reste ABSENT : `tcp://`, prefix, json_query, multi-connexions.
+ * Lot 3 — flux TCP brut (`N:tcp://host:port`, `N:telnet://host:port`) :
+ *
+ *   open (R, W ou RDWR)      -> ST_SEND     « ATDT-host:port\r » ('-' = pas de
+ *                                            négociation telnet ; '=' pour telnet://)
+ *                            -> ST_DIAL     attente de la ligne CONNECT (ou NO CARRIER…)
+ *                            -> ST_STREAM   octets bruts : read sert l'anneau, write part
+ *                                            directement ; « \r\nNO CARRIER » en bande = EOF
+ *   close                    -> ST_HANGUP   +++ (garde 1,1 s avant/après) puis ATH,
+ *                                            puis retour au passe-plat ; immédiat si la
+ *                                            distante a déjà raccroché
+ * Pas de DCD : la fin distante ne se voit que par la trame « NO CARRIER » du
+ * modem, comme pour tout programme terminal. Lecture NON bloquante conseillée :
+ * interroger `$B7 status` (avail) avant read_xram, qui bloque l'anneau vide.
+ *
+ * Ce qui reste ABSENT : prefix, json_query, multi-connexions.
  */
 
 #include "api/api.h"
@@ -66,8 +80,15 @@ enum net_state {
     ST_RECV,       /* réponse en cours de réception */
     ST_EOF,        /* corps complet ; l'anneau peut encore contenir des octets */
     ST_ERR,        /* transaction échouée (net_errno) */
-    ST_WBUF        /* ouvert en écriture : le corps s'accumule (lot 2) */
+    ST_WBUF,       /* ouvert en écriture : le corps s'accumule (lot 2) */
+    ST_DIAL,       /* tcp : numérotation, attente de CONNECT (lot 3) */
+    ST_STREAM,     /* tcp : connecté, flux brut dans les deux sens */
+    ST_HANGUP      /* tcp : raccrochage en cours (+++ / ATH), canal encore tenu */
 };
+
+#define NET_ESC_GUARD_US (1100ull * 1000)   /* garde autour de +++ (modem : 1 s) */
+#define NET_HANGUP_TAIL_US (300ull * 1000)  /* laisser le modem répondre à ATH */
+#define NET_DIAL_TIMEOUT_US (30ull * 1000 * 1000)
 
 static struct {
     enum net_state state;
@@ -78,6 +99,11 @@ static struct {
     uint16_t cmd_len, cmd_sent;
     uint16_t body_len, body_sent;   /* écriture : corps linéaire dans ring[0..body_len) */
     bool     writing;
+    bool     stream;                /* lot 3 : transaction tcp:// */
+    uint8_t  hang_step;             /* 0 attente garde, 1 +++ envoyé, 2 ATH envoyé */
+    char     line[48];              /* ST_DIAL : ligne de réponse en cours */
+    uint8_t  line_len;
+    uint8_t  nc_match;              /* ST_STREAM : avancement dans "\r\nNO CARRIER" */
 
     nh_parser hp;
 
@@ -109,6 +135,10 @@ static void net_reset(void)
     net.cmd_len = net.cmd_sent = 0;
     net.body_len = net.body_sent = 0;
     net.writing = false;
+    net.stream = false;
+    net.hang_step = 0;
+    net.line_len = 0;
+    net.nc_match = 0;
     net.head = net.tail = 0;
     net.deadline = 0;
     net.got_first = false;
@@ -126,7 +156,8 @@ bool net_owns_modem(void)
     /* ST_EOF garde le lien : le « NO CARRIER » de fin arrive après le corps et
      * ne doit pas être servi au mode passe-plat comme si c'était des données. */
     return net.state == ST_SEND || net.state == ST_RECV || net.state == ST_EOF ||
-           net.state == ST_WBUF;
+           net.state == ST_WBUF || net.state == ST_DIAL || net.state == ST_STREAM ||
+           net.state == ST_HANGUP;
 }
 
 uint8_t net_errno(void) { return net.errno_api; }
@@ -162,9 +193,7 @@ int net_open(const uint8_t *path, uint8_t flags)
     if (net.state != ST_IDLE)
         return API_EMFILE;
 
-    /* Lecture (GET) ou écriture (PUT via ATDISKWR) ; pas de RDWR sur un flux. */
-    if (rw == 0x03)
-        return API_EINVAL;
+    /* Lecture (GET) ou écriture (PUT via ATDISKWR) ; RDWR réservé à tcp://. */
     bool writing = (rw == 0x02);
 
     const char *url = (const char *)path + 2;   /* saute « N: » */
@@ -177,6 +206,24 @@ int net_open(const uint8_t *path, uint8_t flags)
 
     net_reset();
     net.dev = dev;
+
+    /* Lot 3 : flux TCP brut. Tous les modes sont admis (bidirectionnel). */
+    bool telnet = !strncmp(url, "telnet://", 9);
+    if (telnet || !strncmp(url, "tcp://", 6)) {
+        const char *hp = url + (telnet ? 9 : 6);
+        if (!hp[0] || !strchr(hp, ':'))
+            return API_EINVAL;      /* host:port obligatoire */
+        int n = snprintf(net.cmd, sizeof net.cmd, "ATDT%c%s\r", telnet ? '=' : '-', hp);
+        if (n <= 0 || n >= (int)sizeof net.cmd)
+            return API_EINVAL;
+        net.cmd_len = (uint16_t)n;
+        net.cmd_sent = 0;
+        net.stream = true;
+        return net_purge_and_arm(dev);
+    }
+
+    if (rw == 0x03)
+        return API_EINVAL;          /* HTTP : pas de RDWR sur un flux GET/PUT */
     net.writing = writing;
 
     if (writing) {
@@ -201,6 +248,14 @@ int net_open(const uint8_t *path, uint8_t flags)
 
 int32_t net_write(const uint8_t *src, uint16_t count)
 {
+    if (net.state == ST_STREAM) {
+        /* Flux : part directement vers le modem (borné par la place USB). */
+        if (!tuh_cdc_write_available((uint8_t)net.dev))
+            return 0;               /* rien accepté : réessayer */
+        uint32_t n = tuh_cdc_write((uint8_t)net.dev, src, count);
+        tuh_cdc_write_flush((uint8_t)net.dev);
+        return (int32_t)n;
+    }
     if (net.state != ST_WBUF)
         return -2;                  /* pas ouvert en écriture (EINVAL) */
     if ((uint32_t)net.body_len + count > NET_RING_SIZE)
@@ -261,9 +316,91 @@ void net_task(void)
             }
         }
         if (net.cmd_sent >= net.cmd_len && (!net.writing || net.body_sent >= net.body_len)) {
-            net.state = ST_RECV;
+            net.state = net.stream ? ST_DIAL : ST_RECV;
             net.head = net.tail = 0;    /* l'anneau redevient le tampon de RÉPONSE */
-            net.deadline = time_us_64() + NET_FIRST_TIMEOUT_US;
+            net.deadline = time_us_64() + (net.stream ? NET_DIAL_TIMEOUT_US : NET_FIRST_TIMEOUT_US);
+        }
+        return;
+    }
+
+    if (net.state == ST_HANGUP) {
+        uint64_t now = time_us_64();
+        if (now < net.deadline) return;
+        if (net.hang_step == 0) {
+            if (!tuh_cdc_write_available((uint8_t)net.dev)) return;
+            tuh_cdc_write((uint8_t)net.dev, "+++", 3);
+            tuh_cdc_write_flush((uint8_t)net.dev);
+            net.hang_step = 1; net.deadline = now + NET_ESC_GUARD_US;
+        } else if (net.hang_step == 1) {
+            if (!tuh_cdc_write_available((uint8_t)net.dev)) return;
+            tuh_cdc_write((uint8_t)net.dev, "ATH\r", 4);
+            tuh_cdc_write_flush((uint8_t)net.dev);
+            net.hang_step = 2; net.deadline = now + NET_HANGUP_TAIL_US;
+        } else {
+            uint8_t tmp[64];        /* purge OK / NO CARRIER puis libère le canal */
+            for (int guard = 0; guard < 64 && tuh_cdc_read_available((uint8_t)net.dev); guard++)
+                tuh_cdc_read((uint8_t)net.dev, tmp, sizeof tmp);
+            net_reset();
+        }
+        return;
+    }
+
+    if (net.state == ST_DIAL) {
+        /* Réponse ligne à ligne du modem : CONNECT xxxx → flux ; sinon refus. */
+        uint64_t now = time_us_64();
+        if (now > net.deadline) { net_fail(API_EIO); return; }
+        uint8_t ch;
+        while (tuh_cdc_read_available((uint8_t)net.dev) && tuh_cdc_read((uint8_t)net.dev, &ch, 1) == 1) {
+            if (ch == '\n' || ch == '\r') {
+                net.line[net.line_len] = 0;
+                if (net.line_len) {
+                    if (!strncmp(net.line, "CONNECT", 7)) {
+                        net.state = ST_STREAM;
+                        net.hp.status = 0;
+                        /* « CONNECT 9600\r\n » : le \n qui suit le \r appartient à la
+                         * réponse du modem, pas au flux. */
+                        if (ch == '\r' && tuh_cdc_read_available((uint8_t)net.dev)) {
+                            uint8_t lf;
+                            tuh_cdc_read((uint8_t)net.dev, &lf, 1);
+                            if (lf != '\n') { net.ring[net.head++ & NET_RING_MASK] = lf; net.head &= NET_RING_MASK; }
+                        }
+                        return;
+                    }
+                    if (!strncmp(net.line, "NO CARRIER", 10) || !strncmp(net.line, "NO ANSWER", 9) ||
+                        !strncmp(net.line, "ERROR", 5) || !strncmp(net.line, "BUSY", 4) ||
+                        !strncmp(net.line, "NO DIALTONE", 11)) {
+                        net_fail(API_EIO); return;
+                    }
+                }
+                net.line_len = 0;   /* DIALLING…, écho : ignorés */
+            } else if (net.line_len < sizeof net.line - 1) {
+                net.line[net.line_len++] = (char)ch;
+            }
+        }
+        return;
+    }
+
+    if (net.state == ST_STREAM) {
+        /* Flux brut → anneau, avec détection en bande de « \r\nNO CARRIER » (fin
+         * distante) : les octets du motif ne sont livrés que s'il échoue. */
+        static const char nc[] = "\r\nNO CARRIER";
+        while (ring_free() > (uint16_t)sizeof nc && tuh_cdc_read_available((uint8_t)net.dev)) {
+            uint8_t ch;
+            if (tuh_cdc_read((uint8_t)net.dev, &ch, 1) != 1) break;
+            if (ch == (uint8_t)nc[net.nc_match]) {
+                if (++net.nc_match == (uint8_t)(sizeof nc - 1)) {
+                    net.state = ST_EOF;     /* la distante a raccroché : EOF après l'anneau */
+                    return;
+                }
+                continue;
+            }
+            /* motif rompu : livrer les octets retenus, puis celui-ci (ou repartir sur lui) */
+            for (uint8_t i = 0; i < net.nc_match; i++)
+                net.ring[net.head++ & NET_RING_MASK] = (uint8_t)nc[i];
+            net.head &= NET_RING_MASK;
+            net.nc_match = (ch == (uint8_t)nc[0]) ? 1 : 0;
+            if (!net.nc_match)
+                net.ring[net.head++ & NET_RING_MASK] = ch, net.head &= NET_RING_MASK;
         }
         return;
     }
@@ -335,8 +472,10 @@ int32_t net_read(uint8_t *dst, uint16_t count)
 {
     if (net.state == ST_ERR)
         return -2;
-    if (net.state == ST_IDLE || net.state == ST_WBUF)
-        return -2;                  /* pas ouvert, ou ouvert en écriture */
+    if (net.state == ST_IDLE || net.state == ST_WBUF || net.state == ST_HANGUP)
+        return -2;                  /* pas ouvert, ouvert en écriture, ou raccrochage */
+    if (net.state == ST_DIAL)
+        return -1;                  /* pas encore connecté */
 
     uint16_t used = ring_used();
     if (!used) {
@@ -362,6 +501,13 @@ void net_close(void)
         return;
     if (net.state == ST_WBUF) {
         net_commit();               /* le PUT part maintenant ; net_task le pompe */
+        return;
+    }
+    if (net.state == ST_DIAL || net.state == ST_STREAM) {
+        /* Connexion vivante : raccrocher proprement (+++ / ATH), en fond. */
+        net.state = ST_HANGUP;
+        net.hang_step = 0;
+        net.deadline = time_us_64() + NET_ESC_GUARD_US;
         return;
     }
     /* Le modem raccroche de lui-même en fin de transaction (« NO CARRIER »
