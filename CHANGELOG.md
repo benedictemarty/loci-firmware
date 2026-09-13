@@ -18,7 +18,7 @@ et cassette intacts). **v0.3** : trampoline piloté par table (`!VER`, `!MEM` = 
 `api/bext_tramp.h` (`extensions/basic-ext-AB/src`, `make`). Règle : pas de mot-clé BASIC dans un
 mot `!` (le tokeniseur remplace `FRE` dans `FREE`). **v0.4** : signature par entrée — `2` = « adresse,octet »
 évalués par la routine des arguments de POKE de la ROM (`$D916`/`$D85B`), poussés sur la xstack ; démo
-`!XSET a,v` (écrit la XRAM). Validé co-sim 1.1b + 1.0.
+`!XSET a,v` (écrit la XRAM). Validé co-sim 1.1b + 1.0. **v0.5** : boucle générique N arguments 16 bits (arité libre).
 
 ### 2026-09-13 — branche `feature/fs-posix` : `$1E SYNCFS`, `$1F STAT`, `$84 CHDIR`, `$85 GETFREE` ; `xstack_ptr` initialisé
 
